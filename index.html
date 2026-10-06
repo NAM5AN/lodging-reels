@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>숙소 릴스 러너</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+  /* 폰트는 Storage 에 한 번만 올려두고 쓴다. 규칙은 실행 중에 붙인다. */
+  :root{
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+    --bg:#f6f5f2; --card:#fff; --ink:#1c1b19; --mute:#6f6b64;
+    --line:#e2dfd9; --accent:#8a5a2b; --accent-ink:#fff;
+    --warn:#a4442c; --ok:#2e6b4f; --field:#fbfaf8;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#17161a; --card:#201f24; --ink:#eceae6; --mute:#9d978e;
+      --line:#34323a; --accent:#c89262; --accent-ink:#1c1b19;
+      --warn:#e08a72; --ok:#7fc0a0; --field:#1a191e;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#17161a; --card:#201f24; --ink:#eceae6; --mute:#9d978e;
+    --line:#34323a; --accent:#c89262; --accent-ink:#1c1b19;
+    --warn:#e08a72; --ok:#7fc0a0; --field:#1a191e;
+  }
+  *,*::before,*::after{box-sizing:inherit}
+  html{-webkit-text-size-adjust:100%; scroll-padding-top:env(safe-area-inset-top,0px)}
+  body{margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Pretendard","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+    font-size:16px; line-height:1.55}
+  .wrap{max-width:680px; margin:0 auto; padding:16px 14px 124px}
+  header{display:flex; align-items:baseline; gap:10px; margin:6px 0 18px}
+  h1{font-size:19px; margin:0; letter-spacing:-.02em}
+  h2{font-size:15px; margin:24px 0 10px; letter-spacing:-.01em}
+  .sub{font-size:12.5px; color:var(--mute)}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px}
+  .proj{cursor:pointer}
+  .proj h3{margin:0 0 3px; font-size:16px}
+  .proj p{margin:0; font-size:13px; color:var(--mute)}
+  label{display:block; margin:16px 0 6px; font-size:13.5px; font-weight:600}
+  label span{font-weight:400; color:var(--mute); font-size:12.5px}
+  input[type=text],textarea,select{width:100%; padding:11px 12px; font:inherit; font-size:15.5px;
+    color:var(--ink); background:var(--field); border:1px solid var(--line);
+    border-radius:10px; outline:none}
+  input[type=text]:focus,textarea:focus,select:focus{border-color:var(--accent)}
+  textarea{min-height:92px; resize:vertical}
+  .hint{font-size:12.5px; color:var(--mute); margin:5px 0 0}
+  button{font:inherit; font-size:15px; font-weight:600; cursor:pointer;
+    border:1px solid var(--line); border-radius:10px; padding:11px 14px;
+    background:var(--card); color:var(--ink)}
+  button.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+  button.ghost{background:transparent}
+  button.danger{color:var(--warn)}
+  button:disabled{opacity:.45; cursor:default}
+  .bar{position:fixed; left:0; right:0; bottom:0; background:var(--card);
+    border-top:1px solid var(--line); z-index:5;
+    padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px))}
+  .bar .inner{max-width:680px; margin:0 auto; display:flex; gap:8px}
+  .bar button{flex:1}
+  .note{font-size:13px; color:var(--mute); background:var(--field);
+    border:1px solid var(--line); border-radius:10px; padding:11px 12px}
+  .note b{color:var(--ink)}
+  pre{margin:0; padding:12px; background:var(--field); border:1px solid var(--line);
+    border-radius:10px; font-size:12.5px; line-height:1.5; overflow-x:auto;
+    white-space:pre; font-family:ui-monospace,Menlo,monospace}
+  .toast{position:fixed; left:50%; transform:translateX(-50%);
+    bottom:calc(86px + env(safe-area-inset-bottom,0px)); background:var(--ink);
+    color:var(--bg); padding:10px 16px; border-radius:999px; font-size:14px;
+    z-index:9; opacity:0; transition:opacity .2s; pointer-events:none; max-width:90%}
+  .toast.on{opacity:1}
+  .empty{text-align:center; color:var(--mute); padding:36px 10px; font-size:14px}
+  .status{font-size:12.5px; color:var(--mute); margin-top:10px}
+  .status.bad{color:var(--warn)}
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:8px; margin-top:10px}
+  .thumb{position:relative; border:1px solid var(--line); border-radius:10px;
+    overflow:hidden; background:var(--field); aspect-ratio:3/4}
+  .thumb img{width:100%; height:100%; object-fit:cover; display:block}
+  .thumb .n{position:absolute; left:4px; top:4px; background:rgba(0,0,0,.72);
+    color:#fff; font-size:11px; font-weight:700; padding:2px 6px; border-radius:6px}
+  .thumb .ops{position:absolute; left:0; right:0; bottom:0; display:flex;
+    background:rgba(0,0,0,.62)}
+  .thumb .ops button{flex:1; padding:6px 0; font-size:13px; border:0;
+    border-radius:0; background:transparent; color:#fff; font-weight:700}
+  .pickbtn{width:100%; border:1.5px dashed var(--line); border-radius:12px;
+    padding:16px 12px; background:var(--field); color:var(--ink);
+    font-size:15px; font-weight:600}
+  .pickbtn:active{border-color:var(--accent)}
+  .sr{position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+    overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%);
+    white-space:nowrap; border:0}
+  .meter{height:5px; background:var(--line); border-radius:999px; overflow:hidden; margin-top:8px}
+  .meter i{display:block; height:100%; background:var(--accent)}
+  .busy{pointer-events:none; opacity:.6}
+  .trk{border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:10px;
+    background:var(--field)}
+  .trkhead{display:flex; align-items:baseline; gap:8px; margin-bottom:8px}
+  .trkhead b{font-size:14.5px}
+  .trkname{font-size:12.5px; color:var(--mute); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; min-width:0}
+  .trkline{display:flex; align-items:center; gap:8px; margin:8px 0 0;
+    font-size:13.5px; font-weight:400}
+  .trkline input[type=range]{flex:1; min-width:0}
+  .trkline input[type=checkbox]{width:18px; height:18px; margin:0}
+  .trkval{flex:0 0 32px; text-align:right; color:var(--mute);
+    font-size:12.5px; font-variant-numeric:tabular-nums}
+  .cut{display:flex; align-items:center; gap:10px; padding:6px 0;
+    border-bottom:1px solid var(--line)}
+  .cut:last-of-type{border-bottom:0}
+  .cut.cover{background:var(--field); border-radius:10px; padding:6px 8px; margin-bottom:6px}
+  .cut .cn{flex:0 0 32px; font-size:11.5px; font-weight:700; color:var(--mute);
+    font-variant-numeric:tabular-nums}
+  .cut .ct{flex:1; font-size:14.5px; line-height:1.35; min-width:0; word-break:keep-all}
+  .cpick{flex:0 0 46px; width:46px; height:62px; padding:0; overflow:hidden;
+    position:relative; border-radius:8px; border:1px solid var(--line); background:var(--field)}
+  .cpick img{width:100%; height:100%; object-fit:cover; display:block}
+  .cpick i{position:absolute; left:2px; top:2px; font-style:normal; font-size:10px;
+    font-weight:700; color:#fff; background:rgba(0,0,0,.7); border-radius:4px; padding:0 4px}
+  .cstrip{display:flex; gap:6px; overflow-x:auto; padding:8px 0;
+    border-bottom:1px solid var(--line); -webkit-overflow-scrolling:touch}
+  .cstrip button{flex:0 0 58px; width:58px; height:78px; padding:0; position:relative;
+    overflow:hidden; border-radius:8px; border:1px solid var(--line)}
+  .cstrip img{width:100%; height:100%; object-fit:cover; display:block}
+  .cstrip i{position:absolute; left:2px; top:2px; font-style:normal; font-size:10px;
+    font-weight:700; color:#fff; background:rgba(0,0,0,.7); border-radius:4px; padding:0 4px}
+  .tbox{margin-top:12px}
+  .tprev{position:relative; max-width:260px; margin:0 auto;
+    border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#000}
+  .tprev img{width:100%; display:block}
+  /* 인스타 그리드는 가운데 1:1 만 보여준다. 그 범위를 표시해준다. */
+  .tprev .sq{position:absolute; left:0; right:0; top:21.875%; height:56.25%;
+    border:2px dashed rgba(255,255,255,.75); pointer-events:none}
+  .tprev .sq b{position:absolute; right:4px; bottom:2px; font-size:10px;
+    font-weight:700; color:#fff; text-shadow:0 1px 3px #000}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1>숙소 릴스 러너</h1><span class="sub" id="where"></span></header>
+  <div id="view"></div>
+</div>
+<div class="bar"><div class="inner" id="bar"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  "use strict";
+
+  var FIELDS = [
+    {k:"folder", label:"폴더 이름", type:"text",
+     hint:"PC에서 만들어질 폴더 이름이에요. 띄어쓰기 없이 짧게.", ph:"oceanview-pension"},
+    {k:"name", h:"숙소명", type:"text", ph:"감성숙소 애빛"},
+    {k:"area", h:"지역", type:"text", ph:"제주 제주시 구좌읍"},
+    {k:"access", h:"출발지 기준 접근성", type:"text",
+     hint:"영상에 그대로 나가요. 거리보다 시간이 잘 먹혀요.",
+     ph:"제주공항에서 차로 40분 / 바다까지 도보 2분"},
+    {k:"type", h:"숙소 유형", type:"text", ph:"독채 펜션"},
+    {k:"people", h:"수용 인원", type:"text", ph:"최대 6인"},
+    {k:"price", h:"가격대", type:"text", ph:"비수기 평일 18만원대 / 성수기 주말 32만원대"},
+    {k:"perks", h:"확인된 혜택", type:"textarea",
+     hint:"한 줄에 하나씩. 확실한 것만. 여기 없는 건 영상에서 말 안 해요.",
+     ph:"반려견 동반 가능 (중형견까지)\n야외 자쿠지 (사계절 온수)"},
+    {k:"links", h:"참고 링크", type:"textarea",
+     hint:"예약 페이지, 공식 사이트, 인스타. 한 줄에 하나씩.",
+     ph:"https://booking.naver.com/..."},
+    {k:"keyword", h:"댓글 키워드", type:"text",
+     hint:"릴스마다 다르게. 지역명 2~4글자가 제일 좋아요.", ph:"구좌"},
+    {k:"hide", h:"영상에 넣으면 안 되는 것", type:"textarea",
+     ph:"정확한 주소\n숙소 공식 계정 아이디"},
+    {k:"deal", h:"제휴 여부", type:"select", opts:["유상 제휴","무상 제공","제휴 없음"]},
+    {k:"memo", h:"추가 메모", type:"textarea", ph:"겨울 성수기 예약이 빨리 차는 편."}
+  ];
+
+  // 대본을 어떤 각도로 쓸지. 숙소의 속성이 아니라 이번 영상의 연출 선택이라
+  // ② 숙소 정보가 아니라 ③ 대본 패널 맨 위에 둔다.
+  var ANGLES = ["자동 (AI가 판단)",
+    "절대가 저렴 — 숫자 자체가 싸다",
+    "1인당 저렴 — 여럿이 나누면 싸다",
+    "가치 대비 — 포함된 걸 세어보면 값을 한다",
+    "희소성 — 여기밖에 없다 (가격은 거의 말 안 함)",
+    "지금 할인 — 특가가 열린 시점이다"];
+
+  var PREAMBLE =
+    "# 숙소 정보\n\n대본 생성기가 읽는 파일이에요.\n" +
+    "**여기 적은 것만 사실로 취급해요.** 빈 항목은 영상에서 언급 안 해요.\n\n---\n";
+
+  // 사진은 영상이 1080x1920 이라 2160px 이면 충분하다.
+  // 상세페이지는 글씨를 읽어야 해서 더 크게 남긴다.
+  var LIMITS = {photo:{edge:2160, q:0.88}, info:{edge:2400, q:0.92}};
+
+  // ---------- Supabase ----------
+  // SDK 없이 REST 로 직접 간다. 외부 스크립트가 없으니 깨질 데가 적다.
+  var SUPA = {
+    url: "https://kfgtvifupumjuewwxzmz.supabase.co",
+    key: "sb_publishable_KROAv1c1eX3wlEt8Mog8OQ_jNTMJzoM",
+    bucket: "lodging-reels",
+    table: "lodging_reels_projects"
+  };
+  var FN = {
+    ai:  SUPA.url + "/functions/v1/lodging-reels-ai",
+    tts: SUPA.url + "/functions/v1/lodging-reels-tts"
+  };
+
+  var session=null, uid=null, local=false;
+  var projects=[], current=null, usage=null;
+  var loadError=null, capNote="";
+  var view=document.getElementById("view"), bar=document.getElementById("bar");
+
+  function toast(m){var t=document.getElementById("toast");t.textContent=m;
+    t.classList.add("on");clearTimeout(t._h);
+    t._h=setTimeout(function(){t.classList.remove("on")},2400);}
+  function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c];});}
+  function nid(){return "p"+Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
+
+  // 파일 경로가 곧 id 다. 공개 버킷이라 그대로 <img src> 로 쓴다.
+  function blobUrl(id){
+    return SUPA.url + "/storage/v1/object/public/" + SUPA.bucket + "/" + id;
+  }
+
+  // ---------- 로그인 ----------
+  function saveSession(s){
+    session=s; uid=(s && s.user && s.user.id) || null;
+    try{ localStorage.setItem("lr_session", JSON.stringify(s||null)); }catch(e){}
+  }
+  function readSession(){
+    try{ return JSON.parse(localStorage.getItem("lr_session")||"null"); }catch(e){ return null; }
+  }
+  function authHeaders(extra){
+    var h = Object.assign({apikey:SUPA.key}, extra||{});
+    if(session && session.access_token) h.Authorization="Bearer "+session.access_token;
+    return h;
+  }
+
+  async function signIn(email, password){
+    var r=await fetch(SUPA.url+"/auth/v1/token?grant_type=password",{
+      method:"POST",
+      headers:{apikey:SUPA.key,"Content-Type":"application/json"},
+      body:JSON.stringify({email:email, password:password})
+    });
+    var j=await r.json();
+    if(!r.ok) throw new Error(j.error_description || j.msg || j.message || "로그인 실패");
+    saveSession(j); return j;
+  }
+  async function signUp(email, password){
+    var r=await fetch(SUPA.url+"/auth/v1/signup",{
+      method:"POST",
+      headers:{apikey:SUPA.key,"Content-Type":"application/json"},
+      body:JSON.stringify({email:email, password:password})
+    });
+    var j=await r.json();
+    if(!r.ok) throw new Error(j.error_description || j.msg || j.message || "가입 실패");
+    if(j.access_token) saveSession(j);
+    return j;
+  }
+  async function refresh(){
+    if(!session || !session.refresh_token) return false;
+    try{
+      var r=await fetch(SUPA.url+"/auth/v1/token?grant_type=refresh_token",{
+        method:"POST",
+        headers:{apikey:SUPA.key,"Content-Type":"application/json"},
+        body:JSON.stringify({refresh_token:session.refresh_token})
+      });
+      if(!r.ok) return false;
+      saveSession(await r.json()); return true;
+    }catch(e){ return false; }
+  }
+  function signOut(){ saveSession(null); location.reload(); }
+
+  // 토큰이 만료됐으면 한 번 갱신하고 다시 보낸다.
+  async function api(url, opts, retry){
+    opts=opts||{};
+    opts.headers=authHeaders(opts.headers);
+    var r=await fetch(url, opts);
+    if(r.status===401 && !retry && await refresh()) return api(url, opts, true);
+    return r;
+  }
+
+  // ---------- 저장 ----------
+  async function loadAll(){
+    if(!uid){ local=true; projects=[]; return; }
+    try{
+      var r=await api(SUPA.url+"/rest/v1/"+SUPA.table+
+            "?select=id,data,updated_at&owner=eq."+uid+"&order=updated_at.desc");
+      if(!r.ok){ loadError="HTTP "+r.status+" "+(await r.text()).slice(0,120); local=true; return; }
+      var rows=await r.json();
+      projects=rows.map(function(row){
+        var v=Object.assign({}, row.data||{});
+        v.id=row.id;
+        v.photos=(v.photos||[]).map(function(x){return Object.assign({},x)});
+        v.infos=(v.infos||[]).map(function(x){return Object.assign({},x)});
+        return v;
+      });
+      local=false;
+    }catch(e){
+      loadError=(e&&e.message)||"알 수 없는 오류"; local=true;
+    }
+  }
+
+  async function persist(p){
+    if(!uid){ toast("로그인이 필요해요"); return false; }
+    p.at=Date.now();
+    var body={ id:p.id, owner:uid, folder:(p.folder||""), name:(p.name||""), data:p };
+    try{
+      var r=await api(SUPA.url+"/rest/v1/"+SUPA.table+"?on_conflict=id",{
+        method:"POST",
+        headers:{"Content-Type":"application/json", Prefer:"resolution=merge-duplicates,return=minimal"},
+        body:JSON.stringify(body)
+      });
+      if(!r.ok){ toast("저장 실패: "+(await r.text()).slice(0,80)); return false; }
+      return true;
+    }catch(e){ toast("저장 실패: "+((e&&e.message)||"")); return false; }
+  }
+
+  async function removeProject(p){
+    var ids=(p.photos||[]).concat(p.infos||[]).map(function(x){return x.id});
+    [p.tts, p.bgm].forEach(function(a){ if(a && a.id) ids.push(a.id); });
+    for(var i=0;i<ids.length;i++){ try{ await storeDelete(ids[i]); }catch(e){} }
+    try{
+      await api(SUPA.url+"/rest/v1/"+SUPA.table+"?id=eq."+encodeURIComponent(p.id),{method:"DELETE"});
+    }catch(e){}
+    projects=projects.filter(function(x){return x.id!==p.id});
+  }
+
+  // ---------- 스토리지 ----------
+  function newPath(projId, kind, ext){
+    return uid+"/"+projId+"/"+kind+"/"+
+           Date.now().toString(36)+Math.random().toString(36).slice(2,8)+"."+ext;
+  }
+  async function storeUpload(path, blob, type){
+    var r=await api(SUPA.url+"/storage/v1/object/"+SUPA.bucket+"/"+path,{
+      method:"POST",
+      headers:{"Content-Type":type||blob.type||"application/octet-stream","x-upsert":"true"},
+      body:blob
+    });
+    if(!r.ok) throw new Error((await r.text()).slice(0,120));
+    return {id:path, url:blobUrl(path), sizeBytes:blob.size};
+  }
+  async function storeDelete(path){
+    if(!path) return;
+    await api(SUPA.url+"/storage/v1/object/"+SUPA.bucket+"/"+path,{method:"DELETE"});
+  }
+  async function storeUsage(){
+    try{
+      var r=await api(SUPA.url+"/storage/v1/object/list/"+SUPA.bucket,{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({prefix:uid+"/", limit:1000})
+      });
+      if(!r.ok) return null;
+      var rows=await r.json(), bytes=0;
+      rows.forEach(function(o){
+        var m=o.metadata||{}; bytes += (m.size||0);
+      });
+      return {bytes:bytes, maxBytes:1073741824};
+    }catch(e){ return null; }
+  }
+
+  // ---------- 파일 내려주기 ----------
+  var downloads = {
+    save: function(o){
+      return new Promise(function(res,rej){
+        try{
+          var u=URL.createObjectURL(o.data);
+          var a=document.createElement("a");
+          a.href=u; a.download=o.filename||"download";
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(function(){ URL.revokeObjectURL(u) }, 60000);
+          res(true);
+        }catch(e){ rej(e); }
+      });
+    }
+  };
+
+  // ---------- 이미지 ----------
+  function shrink(file, kind){
+    var lim=LIMITS[kind];
+    return new Promise(function(res,rej){
+      var fr=new FileReader();
+      fr.onload=function(){
+        var img=new Image();
+        img.onload=function(){
+          var w=img.naturalWidth, h=img.naturalHeight;
+          var s=Math.min(1, lim.edge/Math.max(w,h));
+          var cw=Math.round(w*s), ch=Math.round(h*s);
+          var c=document.createElement("canvas"); c.width=cw; c.height=ch;
+          c.getContext("2d").drawImage(img,0,0,cw,ch);
+          c.toBlob(function(b){ b?res({blob:b,w:cw,h:ch}):rej(new Error("변환 실패")); },
+                   "image/jpeg", lim.q);
+        };
+        img.onerror=function(){rej(new Error("이미지를 못 읽었어요"))};
+        img.src=fr.result;
+      };
+      fr.onerror=function(){rej(new Error("파일을 못 읽었어요"))};
+      fr.readAsDataURL(file);
+    });
+  }
+
+  async function addImages(files, kind){
+    if(!uid){ toast("로그인이 필요해요"); return; }
+    var key = kind==="photo" ? "photos" : "infos";
+    current[key] = current[key]||[];
+    var done=0, fail=0, fresh=[];
+
+    for(var i=0;i<files.length;i++){
+      toast("올리는 중 "+(i+1)+"/"+files.length);
+      try{
+        var r=await shrink(files[i], kind);
+        var up=await storeUpload(newPath(current.id, kind, "jpg"), r.blob, "image/jpeg");
+        current[key].push({id:up.id, w:r.w, h:r.h, size:up.sizeBytes});
+        fresh.push(r.blob);
+        done++;
+      }catch(e){
+        fail++;
+        if(/quota|exceed|413/i.test(String(e&&e.message))){ toast("저장 공간이 꽉 찼어요"); break; }
+      }
+    }
+    await persist(current);
+    renderEdit(current);
+    toast(fail? (done+"장 올렸고 "+fail+"장 실패했어요") : (done+"장 올렸어요"));
+
+    // 상세페이지 캡처는 올리자마자 읽어서 빈 칸을 채워준다.
+    if(kind==="info" && fresh.length) await autofill(fresh);
+  }
+
+
+  async function dropImage(kind, idx){
+    var key = kind==="photo" ? "photos" : "infos";
+    var it = current[key][idx];
+    current[key].splice(idx,1);
+    await persist(current);
+    if(it){ try{ await storeDelete(it.id); }catch(e){} }
+    renderEdit(current);
+  }
+
+  async function moveImage(kind, idx, dir){
+    var key = kind==="photo" ? "photos" : "infos";
+    var a=current[key], j=idx+dir;
+    if(j<0||j>=a.length) return;
+    var t=a[idx]; a[idx]=a[j]; a[j]=t;
+    await persist(current);
+    renderEdit(current);
+  }
+
+  // ---------- 캡처에서 자동 채우기 ----------
+  var AUTO = [
+    {k:"name",   q:"숙소 이름"},
+    {k:"area",   q:"지역 (시/군/구까지)"},
+    {k:"access", q:"접근성. 어디서 얼마나 걸리는지"},
+    {k:"type",   q:"숙소 유형 (독채, 펜션, 호텔, 글램핑 등)"},
+    {k:"people", q:"수용 인원"},
+    {k:"price",  q:"가격대. 비수기/성수기가 나뉘면 같이"},
+    {k:"perks",  q:"시설과 혜택. 한 줄에 하나씩 줄바꿈으로"},
+    {k:"memo",   q:"그 밖에 알아둘 것 (운영 규정, 추가요금, 체크인 시간 등)"}
+  ];
+
+  function setStat(msg, bad){
+    var el=document.getElementById("autostat");
+    if(el){ el.textContent=msg||""; el.className="status"+(bad?" bad":""); }
+  }
+
+  async function infoBlobs(){
+    // 다시 읽기용. 올려둔 캡처를 같은 출처에서 되가져온다.
+    var out=[];
+    var list=(current.infos||[]);
+    for(var i=0;i<list.length;i++){
+      try{
+        var r=await fetch(blobUrl(list[i].id));
+        out.push(await r.blob());
+      }catch(e){}
+    }
+    return out;
+  }
+
+  var ocrWorker=null;
+
+  async function getOcr(onProgress){
+    if(ocrWorker) return ocrWorker;
+    if(typeof Tesseract==="undefined") throw new Error("ocr_script");
+    ocrWorker = await Tesseract.createWorker("kor+eng", 1, {
+      logger:function(m){
+        if(m && m.status && onProgress) onProgress(m.status, m.progress||0);
+      }
+    });
+    return ocrWorker;
+  }
+
+  // 캡처는 세로로 길어서 통째로 넣으면 글자가 뭉개진다. 잘라서 읽는다.
+  function sliceFor(blob){
+    return new Promise(function(res){
+      var img=new Image(), url=URL.createObjectURL(blob);
+      img.onload=function(){
+        var w=img.naturalWidth, h=img.naturalHeight, out=[];
+        var band=Math.round(w*1.3), step=Math.round(band*0.94);
+        var n = h<=band ? 1 : Math.min(8, Math.ceil((h-band)/step)+1);
+        for(var i=0;i<n;i++){
+          var y = n===1 ? 0 : Math.min(i*step, h-band);
+          var c=document.createElement("canvas");
+          var ch=Math.min(band,h);
+          // 글자를 키워서 인식률을 올린다
+          var scale = Math.min(2, 1600/w);
+          c.width=Math.round(w*scale); c.height=Math.round(ch*scale);
+          var g=c.getContext("2d");
+          g.drawImage(img, 0, y, w, ch, 0, 0, c.width, c.height);
+          out.push(c);
+        }
+        URL.revokeObjectURL(url); res(out);
+      };
+      img.onerror=function(){ URL.revokeObjectURL(url); res([]); };
+      img.src=url;
+    });
+  }
+
+  async function ocrAll(blobs){
+    var w = await getOcr(function(st,pr){
+      if(st==="loading language traineddata" || st==="loading tesseract core")
+        setStat("글자 인식 준비 중이에요... "+Math.round(pr*100)+"%");
+    });
+    var texts=[];
+    for(var i=0;i<blobs.length;i++){
+      var parts = await sliceFor(blobs[i]);
+      for(var j=0;j<parts.length;j++){
+        setStat("캡처 "+(i+1)+"/"+blobs.length+" 읽는 중 ("+(j+1)+"/"+parts.length+")...");
+        try{
+          var r = await w.recognize(parts[j]);
+          if(r && r.data && r.data.text) texts.push(r.data.text.trim());
+        }catch(e){}
+      }
+    }
+    return texts.join("\n").replace(/\n{3,}/g,"\n\n").slice(0, 20000);
+  }
+
+  function fillPrompt(extra){
+    return "숙박업소 상세페이지에서 가져온 내용이에요. 읽고 아래 항목을 채워주세요.\n\n"+
+      AUTO.map(function(f){ return "- "+f.k+" : "+f.q; }).join("\n")+
+      "\n\n규칙:\n"+
+      "- 주어진 내용에 있는 것만 쓰세요. 추측하거나 지어내지 마세요.\n"+
+      "- 못 찾은 항목은 null 로 두세요.\n"+
+      "- 홍보 문구를 그대로 옮기지 말고 사실만 간결하게 적으세요.\n"+
+      "- perks 는 줄바꿈으로 구분한 하나의 문자열로 주세요.\n"+
+      "- 글자 인식 과정에서 오타가 섞여 있을 수 있어요. 문맥으로 바로잡아 읽으세요.\n"+
+      "- 확실하지 않으면 비워두세요.\n\n"+
+      "JSON 객체 하나만 답하세요. 설명이나 코드블록 없이요. "+
+      "키는 "+AUTO.map(function(f){return f.k}).join(", ")+" 예요."+
+      (extra||"");
+  }
+
+  function applyFields(got){
+    if(!got || typeof got!=="object"){
+      setStat("읽은 내용을 해석하지 못했어요. 직접 입력해주세요.", true);
+      return false;
+    }
+    var filled=[], skipped=0;
+    AUTO.forEach(function(f){
+      var v=got[f.k];
+      if(v==null || String(v).trim()==="") return;
+      if((current[f.k]||"").trim()){ skipped++; return; }
+      current[f.k]=String(v).trim(); filled.push(f.k);
+    });
+    if(!filled.length){
+      setStat(skipped ? "이미 적어두신 칸이라 건드리지 않았어요."
+                      : "캡처에서 쓸 정보를 못 찾았어요. 글씨가 작으면 확대해서 다시 찍어주세요.", true);
+      return false;
+    }
+    persist(current).then(function(){
+      renderEdit(current);
+      setStat(filled.length+"개 칸을 채웠어요. 가격과 인원은 꼭 확인해주세요.");
+    });
+    return true;
+  }
+
+  async function autofill(blobs){
+    if(!uid){ setStat("로그인이 필요해요.", true); return; }
+    if(!blobs || !blobs.length){ setStat("읽을 캡처가 없어요.", true); return; }
+
+    setStat("캡처에서 글자를 읽는 중이에요...");
+    var text;
+    try{
+      text = await ocrAll(blobs);
+    }catch(e){
+      setStat(e && e.message==="ocr_script"
+        ? "글자 인식 도구를 못 불러왔어요. 새로고침 후 다시 시도해주세요."
+        : "글자를 읽어내지 못했어요"+(e&&e.message?" ("+String(e.message).slice(0,60)+")":"")+".", true);
+      return;
+    }
+
+    if(!text || text.replace(/\s/g,"").length<30){
+      setStat("캡처에서 글자를 거의 못 찾았어요. 화면을 확대해서 다시 캡처해주세요.", true);
+      return;
+    }
+
+    setStat("읽은 글자를 정리하는 중이에요...");
+    try{
+      applyFields(await askJSON(fillPrompt("\n\n--- 읽어낸 내용 ---\n"+text), 2));
+    }catch(e2){
+      var c2=(e2&&e2.code)||"";
+      setStat(c2==="unauthorized" ? "로그인이 풀렸어요. 새로고침해주세요."
+            : c2==="rate_limited" ? "요청이 많아요. 잠시 뒤 다시 눌러주세요."
+            : "정리에 실패했어요"+(c2?" ("+c2+")":"")+".", true);
+    }
+  }
+
+  // ---------- brief.md ----------
+  function buildBrief(p){
+    var out=PREAMBLE;
+    FIELDS.forEach(function(f){
+      if(!f.h) return;
+      out += "\n## "+f.h+"\n"+((p[f.k]||"").trim())+"\n";
+    });
+    out += "\n## 가격 어필 방식\n"+((p.angle||ANGLES[0]).trim())+"\n";
+    return out;
+  }
+
+  // ---------- 내보내기 ----------
+  async function exportZip(){
+    if(!downloads){ toast("이 화면에서는 다운로드가 안 돼요"); return; }
+    var folder=(current.folder||"").trim();
+    if(!folder){ toast("폴더 이름을 먼저 적어주세요"); return; }
+    if(typeof JSZip==="undefined"){ toast("압축 도구를 못 불러왔어요. 새로고침 해보세요"); return; }
+
+    toast("압축하는 중...");
+    var zip=new JSZip(), root=zip.folder(folder);
+    root.file("brief.md", buildBrief(current));
+
+    var ph=current.photos||[], inf=current.infos||[];
+    try{
+      for(var i=0;i<ph.length;i++){
+        var r=await fetch(blobUrl(ph[i].id));
+        root.file(String(i+1).padStart(2,"0")+".jpg", await r.blob());
+      }
+      if(inf.length){
+        var ifolder=root.folder("info");
+        for(var j=0;j<inf.length;j++){
+          var r2=await fetch(blobUrl(inf[j].id));
+          ifolder.file("detail_"+String(j+1).padStart(2,"0")+".jpg", await r2.blob());
+        }
+      }
+    }catch(e){ toast("이미지를 가져오지 못했어요"); return; }
+
+    var out=await zip.generateAsync({type:"blob", compression:"STORE"});
+    try{
+      await downloads.save({filename:folder+".zip", data:out});
+      toast("받았어요. input/photos 에 풀어주세요");
+    }catch(e){
+      toast(e && e.code==="declined" ? "취소했어요" : "다운로드가 안 됐어요");
+    }
+  }
+
+  // ---------- 목록 ----------
+  function renderList(){
+    current=null;
+    var h="";
+    if(!projects.length){
+      h='<div class="empty">아직 등록한 숙소가 없어요.<br>아래 버튼으로 하나 만들어보세요.</div>';
+    }else{
+      projects.forEach(function(p){
+        var np=(p.photos||[]).length, ni=(p.infos||[]).length;
+        h+='<div class="card proj" data-id="'+esc(p.id)+'">'+
+           '<h3>'+esc(p.name||p.folder||"이름 없음")+'</h3>'+
+           '<p>'+esc(p.folder||"폴더명 없음")+' · 사진 '+np+'장'+
+           (ni?' · 캡처 '+ni+'장':'')+'</p></div>';
+      });
+    }
+    h=fontSection()+h;
+    h+='<p class="status '+(local?"bad":"")+'" id="st"></p>';
+    h+='<p class="status" id="diag"></p>';
+    h+='<button type="button" id="reload" style="width:100%;margin-top:8px">다시 불러오기</button>';
+    if(usage){
+      var pct=Math.min(100, Math.round(usage.bytes/usage.maxBytes*100));
+      h+='<div class="note" style="margin-top:12px">저장 공간 '+
+         (usage.bytes/1048576).toFixed(0)+'MB / '+(usage.maxBytes/1048576).toFixed(0)+'MB'+
+         '<div class="meter"><i style="width:'+pct+'%"></i></div></div>';
+    }
+    view.innerHTML=h;
+    document.getElementById("st").textContent = local
+      ? "불러오지 못했어요. 다시 불러오기를 눌러보세요."
+      : "계정에 저장돼요. 폰과 PC가 같이 보여요.";
+    var diag=document.getElementById("diag");
+    if(diag) diag.textContent = capNote + (loadError? "  /  읽기 실패: "+loadError : "");
+    var rl=document.getElementById("reload");
+    if(rl) rl.addEventListener("click",async function(){
+      rl.disabled=true; rl.textContent="불러오는 중...";
+      loadError=null; local=false;
+      await loadAll();
+      usage=await storeUsage();
+      renderList();
+    });
+    Array.prototype.forEach.call(view.querySelectorAll('[data-font]'),function(el){
+      if(el.tagName==="BUTTON"){
+        el.addEventListener("click",function(){
+          var i=document.getElementById("fnt_"+el.dataset.font); if(i) i.click();
+        });
+      }else{
+        el.addEventListener("change",function(){
+          if(el.files && el.files[0]) addFont(el.files[0], el.dataset.font);
+        });
+      }
+    });
+    Array.prototype.forEach.call(view.querySelectorAll(".proj"),function(el){
+      el.addEventListener("click",function(){
+        var p=projects.filter(function(x){return x.id===el.dataset.id})[0];
+        if(p) renderEdit(p);
+      });
+    });
+    bar.innerHTML='<button class="ghost" id="out">로그아웃</button>'+
+                  '<button class="primary" id="new">+ 새 숙소</button>';
+    document.getElementById("out").addEventListener("click",function(){
+      if(confirm("로그아웃할까요?")) signOut();
+    });
+    document.getElementById("new").addEventListener("click",function(){
+      renderEdit({id:nid(), deal:"유상 제휴", photos:[], infos:[]});
+    });
+  }
+
+  // ---------- 대본 만들기 ----------
+  var VIDEO = {w:1080, h:1920, fps:30, cut:0.9, coverHold:0.5, subY:496};
+
+  // 레퍼런스 상위 전환군(댓글/팔로워 2.5~11%)은 컷 18~35개, 컷당 0.73~0.95초였다.
+  // 대본을 먼저 쓰므로 사진 수가 아니라 원하는 컷 수로 분량을 정한다.
+  function targetLines(){
+    var v=parseInt(current.lines,10);
+    return (v>=10 && v<=30) ? v : 20;
+  }
+  function scriptLines(){
+    return (current.script||"").split("\n")
+      .map(function(x){return x.trim()}).filter(function(x){return x});
+  }
+  function cutCount(){ return scriptLines().length || targetLines(); }
+
+  // 컷마다 어떤 사진을 쓸지. 비어 있으면 고르게 나눠 붙인다.
+  function ensureMap(){
+    var C=scriptLines().length, n=(current.photos||[]).length;
+    var m=(current.map||[]).slice();
+    for(var i=0;i<C;i++){
+      if(typeof m[i]!=="number" || m[i]<0 || m[i]>=n){
+        m[i] = n ? Math.min(n-1, Math.floor(i*n/C)) : 0;
+      }
+    }
+    m.length=C;
+    current.map=m;
+    return m;
+  }
+
+  // ---------- ③ 대본 ----------
+  function scriptSection(){
+    var sc=(current.script||""), cv=(current.cover||"");
+    var C=cutCount(), L=targetLines();
+    var len=(C*VIDEO.cut + VIDEO.coverHold).toFixed(1);
+    var opts=[14,16,18,20,22,24,26].map(function(v){
+      return '<option value="'+v+'"'+(v===L?' selected':'')+'>'+v+'컷</option>'; }).join("");
+    return '<h2>③ 대본</h2><div class="card">'+
+      '<p class="hint" style="margin:0 0 10px">사진보다 대본이 먼저예요. '+
+      '대본을 쓰고 나서 각 컷에 어울리는 사진을 붙입니다.</p>'+
+      '<label for="f_angle" style="margin-top:0">가격 어필 방식 '+
+      '<span>훅과 댓글 유도 문구가 이걸 따라가요</span></label>'+
+      '<select id="f_angle">'+ANGLES.map(function(o){
+        return '<option'+(o===(current.angle||ANGLES[0])?' selected':'')+'>'+esc(o)+'</option>';
+      }).join("")+'</select>'+
+      '<p class="hint">비싼 숙소에 \'싸다\'를 쓰면 안 믿기고 역효과가 나요.</p>'+
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:14px">'+
+        '<select id="f_lines" style="width:110px">'+opts+'</select>'+
+        '<button type="button" id="mkscript" style="flex:1">대본 만들기</button>'+
+      '</div>'+
+      '<p class="status" id="scstat"></p>'+
+      '<label for="f_cover">커버 문구 <span>1줄째 = 윗줄(작게) · 2줄째 = 아랫줄(크게)</span></label>'+
+      '<textarea id="f_cover" style="min-height:64px" placeholder="아무리 봐도&#10;가격이 잘못됐어요">'+esc(cv)+'</textarea>'+
+      '<button type="button" id="swapcover" style="width:100%;margin-top:6px">두 줄 바꾸기</button>'+
+      '<label for="f_script">컷 자막 <span>한 줄에 한 컷</span></label>'+
+      '<textarea id="f_script" style="min-height:200px" placeholder="한 줄에 한 컷씩">'+esc(sc)+'</textarea>'+
+      '<p class="hint">지금 '+C+'컷 · 컷당 '+VIDEO.cut+'초 · 커버 포함 약 '+len+'초</p>'+
+      '<button type="button" id="copynar" class="ghost" style="width:100%">나레이션용 텍스트 복사</button>'+
+      '<p class="hint">일레븐랩스에 붙여넣어 mp3 를 만든 뒤 ⑥ 에 올리면 돼요.</p>'+
+      '</div>';
+  }
+
+  // ---------- ⑤ 컷 맞추기 ----------
+  function matchSection(){
+    var cuts=scriptLines(), ph=current.photos||[];
+    var h='<h2>⑤ 컷 맞추기</h2><div class="card">';
+    if(!cuts.length || !ph.length){
+      h+='<p class="hint" style="margin:0">'+
+         (!cuts.length?'대본을 먼저 만들어주세요.':'사진을 먼저 올려주세요.')+
+         ' 둘 다 있으면 여기서 자막마다 사진을 고를 수 있어요.</p></div>';
+      return h;
+    }
+    var m=ensureMap();
+    var ci=(typeof current.coverPhoto==="number" && current.coverPhoto<ph.length) ? current.coverPhoto : 0;
+    h+='<p class="hint" style="margin:0 0 10px">사진을 눌러서 바꾸세요. '+
+       '같은 사진을 연달아 쓰면 줌이 이어져요.</p>';
+    h+='<div class="cut cover"><span class="cn">커버</span>'+
+       '<span class="ct">'+esc(((current.cover||"").split("\n")[1]||"").trim()||"커버 문구")+'</span>'+
+       '<button type="button" class="cpick" data-cut="-1">'+
+       '<img src="'+blobUrl(ph[ci].id)+'" alt=""><i>'+(ci+1)+'</i></button></div>';
+    cuts.forEach(function(t,i){
+      var pi=Math.min(ph.length-1, m[i]||0);
+      h+='<div class="cut"><span class="cn">'+String(i+1).padStart(2,"0")+'</span>'+
+         '<span class="ct">'+esc(t)+'</span>'+
+         '<button type="button" class="cpick" data-cut="'+i+'">'+
+         '<img src="'+blobUrl(ph[pi].id)+'" alt=""><i>'+(pi+1)+'</i></button></div>';
+    });
+    h+='<button type="button" id="remap" class="ghost" style="width:100%;margin-top:10px">순서대로 다시 배분</button></div>';
+    return h;
+  }
+
+  // ---------- ⑥ 소리 ----------
+  // 오디오는 에셋 저장소가 안 받아서 base64 텍스트로 넣는다. 그래야 새로고침해도 남는다.
+  var TRACKS=[{k:"tts", h:"나레이션", hint:"일레븐랩스에서 만든 mp3 를 올리세요."},
+              {k:"bgm", h:"배경음악", hint:"영상 길이에 맞춰 반복 재생돼요."}];
+
+  function trackRow(t){
+    var rec=current[t.k], on=!(current[t.k+"Mute"]);
+    var vol=(typeof current[t.k+"Vol"]==="number") ? current[t.k+"Vol"]
+          : (t.k==="bgm" ? 0.22 : 1);
+    var h='<div class="trk"><div class="trkhead">'+
+      '<b>'+esc(t.h)+'</b>'+
+      (rec? '<span class="trkname">'+esc(rec.name||"")+'</span>' : '<span class="trkname">없음</span>')+
+      '</div>';
+    h+='<button type="button" class="pickbtn" data-aud="'+t.k+'" style="padding:10px">'+
+       (rec?'다른 파일로 바꾸기':esc(t.h)+' 파일 고르기')+'</button>'+
+       '<input class="sr" type="file" accept="audio/*" id="aud_'+t.k+'" data-aud="'+t.k+'">';
+    if(t.k==="tts"){
+      h+='<button type="button" class="primary" id="mktts" style="width:100%;margin-top:8px">'+
+         '대본으로 목소리 만들기</button>'+
+         '<p class="hint" style="margin-top:6px">자막을 이어 읽어 음성을 만들어요. 몇 초 걸려요.</p>';
+    }
+    if(rec){
+      h+='<label class="trkline"><input type="checkbox" data-mute="'+t.k+'"'+(on?' checked':'')+'> 소리 켜기</label>'+
+         '<label class="trkline">음량 <input type="range" min="0" max="100" value="'+Math.round(vol*100)+
+         '" data-vol="'+t.k+'"><span class="trkval">'+Math.round(vol*100)+'</span></label>'+
+         '<button type="button" class="ghost danger" data-auddel="'+t.k+'" style="width:100%;margin-top:6px">빼기</button>';
+    }else{
+      h+='<p class="hint" style="margin-top:6px">'+esc(t.hint)+'</p>';
+    }
+    return h+'</div>';
+  }
+
+  function soundSection(){
+    var fit=(current.fitToNar!==false);
+    var h='<h2>⑥ 소리와 만들기</h2><div class="card">';
+    TRACKS.forEach(function(t){ h+=trackRow(t); });
+    h+='<label class="trkline" style="margin-top:12px">'+
+       '<input type="checkbox" id="fitnar"'+(fit?' checked':'')+'> '+
+       '컷 길이를 나레이션에 맞추기</label>'+
+       '<p class="hint">끄면 컷당 '+VIDEO.cut+'초로 고정돼요. 나레이션이 더 길면 뒤가 잘립니다.</p>';
+    h+='<div style="display:flex;gap:8px;margin-top:12px">'+
+         '<button type="button" id="mkthumb" style="flex:1">썸네일 보기</button>'+
+         '<button type="button" class="primary" id="mkvideo" style="flex:1">영상 만들기</button>'+
+       '</div>'+
+       '<div class="tbox" id="thumbbox"></div>'+
+       '<p class="status" id="vdstat"></p></div>';
+    return h;
+  }
+
+  async function addAudio(file, kind){
+    var st=function(m,bad){var e=document.getElementById("vdstat");
+      if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
+    if(!uid){ st("로그인이 필요해요.",true); return; }
+    if(file.size > 45*1024*1024){ st("파일이 너무 커요. 45MB 아래로 줄여주세요.",true); return; }
+    st("소리를 올리는 중...");
+    try{
+      await putAudio(file, kind, file.name);
+      st("올렸어요: "+file.name);
+    }catch(e){
+      st("올리지 못했어요"+(e&&e.message?" ("+String(e.message).slice(0,60)+")":"")+".",true);
+    }
+  }
+
+  // 파일에서 올리든 TTS 로 만들든 저장하는 길은 하나로 둔다.
+  async function putAudio(blob, kind, label){
+    var ext=/wav/i.test(blob.type)?"wav":(/ogg/i.test(blob.type)?"ogg":"mp3");
+    var up=await storeUpload(newPath(current.id, kind, ext), blob, blob.type||"audio/mpeg");
+    var old=current[kind];
+    current[kind]={id:up.id, name:label||("audio."+ext), mime:blob.type||"audio/mpeg", bytes:blob.size};
+    await persist(current);
+    if(old && old.id && old.id!==up.id){ try{ await storeDelete(old.id); }catch(e){} }
+    audioCache={};
+    renderEdit(current);
+    return current[kind];
+  }
+
+  async function dropAudio(kind){
+    var rec=current[kind];
+    current[kind]=null;
+    await persist(current);
+    if(rec && rec.id){ try{ await storeDelete(rec.id); }catch(e){} }
+    audioCache={};
+    renderEdit(current);
+  }
+
+  // 대본을 음성으로. 키는 Edge Function 안에 있어서 브라우저로 안 나온다.
+  async function makeTTS(){
+    var st=function(m,bad){var e=document.getElementById("vdstat");
+      if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
+    if(!uid){ st("로그인이 필요해요.",true); return; }
+    var txt=scriptLines().join(" ").replace(/\s+/g," ").trim();
+    if(!txt){ st("대본을 먼저 만들어주세요.",true); return; }
+
+    st("목소리를 만드는 중이에요... 10~30초 걸려요");
+    var r;
+    try{
+      r=await api(FN.tts,{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({text:txt})
+      });
+    }catch(e){ st("요청을 보내지 못했어요.",true); return; }
+
+    if(!r.ok){
+      var t=await r.text(), code="";
+      try{ var j=JSON.parse(t); code=j.error||""; t=j.message||t; }catch(e){}
+      st(code==="no_key"  ? "TTS 키가 설정되지 않았어요."
+        :code==="bad_key" ? "TTS 키가 잘못됐어요."
+        :code==="no_voice"? "목소리 ID 가 설정되지 않았어요."
+        :code==="rate_limited" ? "요청이 많아요. 잠시 뒤 다시 눌러주세요."
+        :"목소리를 만들지 못했어요: "+String(t).slice(0,120), true);
+      return;
+    }
+
+    try{
+      var blob=await r.blob();
+      if(blob.size < 500){ st("빈 음성이 왔어요. 설정을 확인해주세요.",true); return; }
+      current.ttsMute=false;
+      await putAudio(blob, "tts", "나레이션.mp3");
+      var e2=document.getElementById("vdstat");
+      if(e2){ e2.className="status";
+        e2.textContent="목소리를 만들었어요 ("+(blob.size/1024).toFixed(0)+"KB). 영상 만들기를 누르세요."; }
+    }catch(e){ st("저장하지 못했어요.",true); }
+  }
+
+  var audioCache={};
+  async function loadAudio(ctx, rec){
+    if(!rec || !rec.id) return null;
+    if(audioCache[rec.id]) return audioCache[rec.id];
+    var r=await fetch(blobUrl(rec.id));
+    var buf=await ctx.decodeAudioData(await r.arrayBuffer());
+    audioCache[rec.id]=buf;
+    return buf;
+  }
+
+  // 사진 고르는 줄. 누른 컷 아래에 띠로 펼친다.
+  function openPicker(btn, cutIdx){
+    var old=document.querySelector(".cstrip");
+    var same = old && old.dataset.cut===String(cutIdx);
+    if(old) old.remove();
+    if(same) return;
+    var ph=current.photos||[];
+    var row=btn.closest(".cut");
+    var d=document.createElement("div");
+    d.className="cstrip"; d.dataset.cut=String(cutIdx);
+    d.innerHTML=ph.map(function(x,i){
+      return '<button type="button" data-pi="'+i+'"><img src="'+blobUrl(x.id)+'" alt=""><i>'+(i+1)+'</i></button>';
+    }).join("");
+    row.insertAdjacentElement("afterend", d);
+    Array.prototype.forEach.call(d.querySelectorAll("button"),function(b){
+      b.addEventListener("click",function(){
+        var pi=+b.dataset.pi;
+        if(cutIdx<0) current.coverPhoto=pi;
+        else { ensureMap(); current.map[cutIdx]=pi; }
+        flushSave();
+        renderEdit(current);
+      });
+    });
+    d.scrollIntoView({block:"nearest"});
+  }
+
+  // 레퍼런스 24개를 댓글/팔로워 전환율로 줄 세운 결과를 규칙으로 옮긴 것.
+  // 상위군(A-23 11.4% / A-17 6.3% / A-20 5.1% / A-18 4.8%)과
+  // 하위군(광고 8개 0.06~0.27%)을 가른 건 글자수가 아니라 아래 7가지였다.
+  function scriptPrompt(){
+    var L=targetLines();
+    var f=function(k){ return (current[k]||"").trim(); };
+    var kw=f("keyword")||"특가";
+
+    // 숙소마다 가격의 성격이 달라서 소구점이 갈린다.
+    // 비싼 숙소에 '저렴' 을 붙이면 안 믿기고, 싼 숙소에 '희소성' 을 붙이면 밋밋해진다.
+    var ang=(f("angle")||"자동 (AI가 판단)");
+    var ANGLE={
+      "절대가 저렴":["숫자 자체가 싸다는 쪽으로 가세요. 값을 그대로 보여주고 놀라게 하세요.",
+                    "'남들은 모르는 / 특가로 가는 방법' 형태가 가장 잘 먹혀요."],
+      "1인당 저렴":["총액이 아니라 1인당으로 환산해서 말하세요. 몇 명이 나눠 쓰는지를 먼저 깔아주세요.",
+                   "인원 조건과 예약 방법을 알려준다고 하세요."],
+      "가치 대비":["싸다고 하지 마세요. 포함된 것을 하나씩 세어 보여주고, 값을 마지막에 붙이세요.",
+                  "'아는 사람만 아는 조건' 을 약속하세요. 그 값에 가는 방법이 따로 있다는 투로요."],
+      "희소성":["가격은 거의 말하지 마세요. 여기가 아니면 안 되는 이유에 전부 쓰세요.",
+               "'아는 사람만 아는 조건' 과 예약 방법을 약속하세요."],
+      "지금 할인":["지금이 특별한 시점이라는 쪽으로 가세요. 평소 값과 지금 값을 나란히 두세요.",
+                  "'지금 열린 특가' 를 약속하세요. 기간이 있다는 걸 흘려주세요."]
+    };
+    var pick=null;
+    for(var ak in ANGLE){ if(ang.indexOf(ak)===0){ pick=ANGLE[ak]; break; } }
+    var angRule = pick ? pick[0]
+      : "가격과 혜택을 보고 직접 판단하세요. 값이 높은 편이면 싸다고 하지 말고, "+
+        "포함된 것을 세어 보여주거나 여기뿐이라는 쪽으로 가세요.";
+    var ctaRule = pick ? pick[1]
+      : "값이 싼 편이면 특가를, 비싼 편이면 '아는 사람만 아는 조건' 을 약속하세요.";
