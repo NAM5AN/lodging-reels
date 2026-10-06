@@ -1285,20 +1285,18 @@
     st("대본을 쓰는 중이에요... 20~60초 걸려요");
     try{
       got=await askJSON(scriptPrompt(), 3, function(i,n){
-        st("호출이 끊겼어요. 다시 거는 중 "+i+"/"+n+"...");
+        st("같은 원본 프롬프트로 다시 시도 중 "+i+"/"+n+"...");
       });
     }catch(e){
       why=(e&&e.code)||(e&&e.message)||"";
       if(why==="unauthorized"){ st("로그인이 풀렸어요. 새로고침해주세요.",true); return; }
       if(why==="no_key"||why==="bad_key"){
-        st("ANTHROPIC_API_KEY 가 설정되지 않았거나 잘못됐어요.",true); return; }
-      // 규칙을 다 넣은 프롬프트가 안 먹히는 경우가 있다. 짧은 걸로 한 번 더.
-      st("긴 지시가 안 먹히네요. 짧은 지시로 다시 해볼게요...");
-      try{ got=await askJSON(shortPrompt(), 2); }
-      catch(e2){ why=(e2&&e2.code)||(e2&&e2.message)||why; }
+        st("AI API 키가 설정되지 않았거나 잘못됐어요.",true); return; }
+      // 품질을 떨어뜨리는 짧은 프롬프트 fallback은 사용하지 않는다.
+      // 실패해도 동일한 원본 프롬프트만 재시도하고, 끝까지 실패하면 사용자에게 그대로 알린다.
     }
     if(!got || !got.script){
-      st("대본 생성에 실패했어요"+(why?" ("+why+")":"")+". 잠시 뒤 다시 눌러주세요.",true);
+      st("원본 대본 프롬프트로 생성에 실패했어요"+(why?" ("+why+")":"")+". 잠시 뒤 다시 눌러주세요.",true);
       return;
     }
 
