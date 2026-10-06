@@ -577,29 +577,45 @@
     if(!uid){ setStat("로그인이 필요해요.", true); return; }
     if(!blobs || !blobs.length){ setStat("읽을 캡처가 없어요.", true); return; }
 
-    setStat("캡처에서 글자를 읽는 중이에요...");
-    var text;
-    try{
-      text = await ocrAll(blobs);
-    }catch(e){
-      setStat(e && e.message==="ocr_script"
-        ? "글자 인식 도구를 못 불러왔어요. 새로고침 후 다시 시도해주세요."
-        : "글자를 읽어내지 못했어요"+(e&&e.message?" ("+String(e.message).slice(0,60)+")":"")+".", true);
-      return;
+    // AI 정리 단계만 실패했을 때 12장을 다시 OCR하지 않도록,
+    // 현재 캡처 목록이 그대로면 직전 OCR 결과를 재사용한다.
+    var cacheKey=(current && current.infos ? current.infos : [])
+      .map(function(x){return x.id}).join("|");
+    var text="";
+    var cache=current && current._ocrCache;
+    if(cache && cache.key===cacheKey && cache.text){
+      text=cache.text;
+      setStat("이미 읽은 글자로 다시 정리하는 중이에요...");
+    }else{
+      setStat("캡처에서 글자를 읽는 중이에요...");
+      try{
+        text = await ocrAll(blobs);
+      }catch(e){
+        setStat(e && e.message==="ocr_script"
+          ? "글자 인식 도구를 못 불러왔어요. 새로고침 후 다시 시도해주세요."
+          : "글자를 읽어내지 못했어요"+(e&&e.message?" ("+String(e.message).slice(0,60)+")":"")+".", true);
+        return;
+      }
+
+      if(!text || text.replace(/\s/g,"").length<30){
+        setStat("캡처에서 글자를 거의 못 찾았어요. 화면을 확대해서 다시 캡처해주세요.", true);
+        return;
+      }
+
+      if(current){
+        current._ocrCache={key:cacheKey, text:text};
+        await persist(current);
+      }
+      setStat("읽은 글자를 정리하는 중이에요...");
     }
 
-    if(!text || text.replace(/\s/g,"").length<30){
-      setStat("캡처에서 글자를 거의 못 찾았어요. 화면을 확대해서 다시 캡처해주세요.", true);
-      return;
-    }
-
-    setStat("읽은 글자를 정리하는 중이에요...");
     try{
       applyFields(await askJSON(fillPrompt("\n\n--- 읽어낸 내용 ---\n"+text), 2));
     }catch(e2){
       var c2=(e2&&e2.code)||"";
       setStat(c2==="unauthorized" ? "로그인이 풀렸어요. 새로고침해주세요."
             : c2==="rate_limited" ? "요청이 많아요. 잠시 뒤 다시 눌러주세요."
+            : c2==="bad_model" ? "AI 모델 설정 오류가 있었어요. 다시 시도해주세요."
             : "정리에 실패했어요"+(c2?" ("+c2+")":"")+".", true);
     }
   }
