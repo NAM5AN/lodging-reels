@@ -1361,18 +1361,26 @@
     });
   }
 
+  // 폰트가 없으면 브라우저/기기의 기본 sans-serif를 명시적으로 쓴다.
+  // 라이선스 폰트는 선택사항이며, 없어도 썸네일/영상 생성은 계속된다.
+  function canvasFontFamily(k){
+    if(k==="cover" && fontsReady.cover) return '"ReelCover", sans-serif';
+    if(k==="body" && fontsReady.body) return '"ReelBody", sans-serif';
+    return 'sans-serif';
+  }
+
   // 글자가 화면을 넘지 않는 가장 큰 크기를 찾는다.
   function fitSize(g,lines,family,want,maxW){
     var sz=want;
     for(; sz>30; sz-=2){
-      g.font=sz+'px "'+family+'", sans-serif';
+      g.font=sz+'px '+family;
       var ok=true;
       for(var i=0;i<lines.length;i++){
         if(g.measureText(lines[i]).width>maxW){ ok=false; break; }
       }
       if(ok) break;
     }
-    g.font=sz+'px "'+family+'", sans-serif';
+    g.font=sz+'px '+family;
     return sz;
   }
 
@@ -1388,8 +1396,9 @@
     var punch=wrapText(lines[1]||"",10);
     if(!punch.length){ punch=lead; lead=[]; }   // 한 줄만 썼으면 그 줄이 펀치다
 
-    var ls = lead.length  ? fitSize(g,lead,"ReelCover",80,940)  : 0;
-    var ps = punch.length ? fitSize(g,punch,"ReelCover",176,930) : 0;
+    var coverFamily=canvasFontFamily("cover");
+    var ls = lead.length  ? fitSize(g,lead,coverFamily,80,940)  : 0;
+    var ps = punch.length ? fitSize(g,punch,coverFamily,176,930) : 0;
     var lh = ls*1.30, ph = ps*1.14;
     var gap = lead.length ? Math.round(ps*0.22) : 0;
     var total = lead.length*lh + gap + punch.length*ph;
@@ -1398,13 +1407,13 @@
     var y = H/2 - total/2;
 
     if(lead.length){
-      g.font=ls+'px "ReelCover", sans-serif';
+      g.font=ls+'px '+coverFamily;
       lead.forEach(function(t,i){
         stroked(g,t,W/2,y+i*lh+lh*0.78,"#FFE55C",Math.max(6,Math.round(ls*0.13)));
       });
       y += lead.length*lh + gap;
     }
-    g.font=ps+'px "ReelCover", sans-serif';
+    g.font=ps+'px '+coverFamily;
     punch.forEach(function(t,i){
       stroked(g,t,W/2,y+i*ph+ph*0.8,"#fff",Math.max(8,Math.round(ps*0.085)));
     });
@@ -1430,7 +1439,7 @@
     if(!text) return;
     g.textAlign="center"; g.lineJoin="round";
     // 자막은 줄을 접지 않는다. 길면 글자를 줄여서 한 줄에 넣는다.
-    var sz=fitSize(g,[text],"ReelBody",72,980);
+    var sz=fitSize(g,[text],canvasFontFamily("body"),72,980);
     stroked(g, text, W/2, VIDEO.subY, "#fff", Math.max(4,Math.round(sz*0.07)));
   }
 
@@ -1440,7 +1449,9 @@
   async function drawCoverTo(canvas){
     var photos=current.photos||[];
     if(!photos.length) throw new Error("no_photo");
-    try{ await document.fonts.load('176px "ReelCover"'); }catch(e){}
+    if(fontsReady.cover){
+      try{ await document.fonts.load('176px "ReelCover"'); }catch(e){}
+    }
     var ci=(typeof current.coverPhoto==="number" && current.coverPhoto<photos.length)
            ? current.coverPhoto : 0;
     var im=await loadImg(blobUrl(photos[ci].id));
@@ -1505,8 +1516,13 @@
     var mime=pickMime();
     if(!mime){ st("이 브라우저가 만들 수 있는 영상 형식이 없어요.",true); return; }
 
-    st("폰트와 사진을 준비하는 중...");
-    try{ await document.fonts.load('110px "ReelCover"'); await document.fonts.load('72px "ReelBody"'); }catch(e){}
+    st("사진을 준비하는 중...");
+    if(fontsReady.cover){
+      try{ await document.fonts.load('110px "ReelCover"'); }catch(e){}
+    }
+    if(fontsReady.body){
+      try{ await document.fonts.load('72px "ReelBody"'); }catch(e){}
+    }
     var imgs=[];
     try{
       for(var i=0;i<photos.length;i++) imgs.push(await loadImg(blobUrl(photos[i].id)));
