@@ -833,7 +833,10 @@
     return String(s||"").replace(/\[[^\[\]\r\n]{1,200}\]/g,"");
   }
   function canonicalTtsSpeech(s){
-    return stripAudioTags(s).replace(/\s+/g," ").trim();
+    return stripAudioTags(s)
+      .normalize("NFKC")
+      .toLocaleLowerCase("ko-KR")
+      .replace(/[^\p{L}\p{N}]+/gu,"");
   }
   function tagsMatchScript(){
     var source=ttsSourceText();
@@ -855,7 +858,7 @@
     return '<div class="trk">'+
       '<div class="trkhead"><b>TTS 표현 태그</b>'+
       '<span class="trkname">ElevenLabs 공식 Auto-tag 방식</span></div>'+
-      '<p class="hint" style="margin-top:0">대본 전체 흐름을 보고 [thoughtful], [excited], [short pause] 같은 음성 태그만 넣어요. 원문 문장은 바꾸지 않습니다.</p>'+
+      '<p class="hint" style="margin-top:0">대본 전체 흐름을 보고 Audio Tag를 넣고, ElevenLabs처럼 문장부호·띄어쓰기·줄바꿈을 자연스럽게 정리해 한 문단으로 만듭니다. 단어와 숫자는 바꾸지 않습니다.</p>'+
       '<button type="button" class="primary" id="mktags" style="width:100%;margin-top:8px">'+label+'</button>'+
       '<label for="f_ttsTagged" style="margin-top:12px">태그 적용 대본 <span>직접 태그 수정 가능</span></label>'+
       '<textarea id="f_ttsTagged" style="min-height:150px" placeholder="먼저 AI 오토태그를 넣어주세요">'+esc(tagged)+'</textarea>'+
@@ -863,7 +866,7 @@
         '<button type="button" class="ghost" id="cleartags" style="flex:1">태그 지우기</button>'+
       '</div>'+
       '<p class="status'+(tagged&&!fresh?' bad':'')+'" id="tagstat">'+
-        (tagged ? (fresh ? "원문 보존 확인됨. TTS 생성 준비됐어요." : "대본이 바뀌었거나 원문과 달라요. 태그를 다시 만들어주세요.") : "")+
+        (tagged ? (fresh ? "단어·숫자 보존 확인됨. 문장부호/띄어쓰기 정리 허용 · TTS 생성 준비됐어요." : "단어나 숫자가 바뀌었어요. 태그를 다시 만들어주세요.") : "")+
       '</p>'+
     '</div>';
   }
@@ -935,7 +938,7 @@
       var code="", msg=t;
       try{ var j=JSON.parse(t); code=j.error||""; msg=j.message||t; }catch(e){}
       st(code==="rate_limited" ? "요청이 많아요. 잠시 뒤 다시 눌러주세요."
-        :code==="tag_integrity_failed" ? "AI가 원문을 건드려서 적용하지 않았어요. 다시 눌러주세요."
+        :code==="tag_integrity_failed" ? "AI가 원문의 단어나 숫자를 바꿔서 적용하지 않았어요. 다시 눌러주세요."
         :code==="no_tag_key" ? "오토태그용 AI 키가 설정되지 않았어요."
         :"오토태그에 실패했어요: "+String(msg).slice(0,120), true);
       return;
@@ -945,7 +948,7 @@
     try{ j2=JSON.parse(t); }catch(e){ st("오토태그 응답을 읽지 못했어요.",true); return; }
     var tagged=String(j2.text||"").trim();
     if(!tagged || canonicalTtsSpeech(tagged)!==canonicalTtsSpeech(source)){
-      st("원문 보존 검사에 실패해서 적용하지 않았어요.",true); return;
+      st("단어·숫자 보존 검사에 실패해서 적용하지 않았어요.",true); return;
     }
 
     current.ttsTagged=tagged;
@@ -1916,7 +1919,7 @@
         if(se){
           se.className="status"+(ok?"":" bad");
           se.textContent=ok ? "원문 보존 확인됨. TTS 생성 준비됐어요."
-                            : "원문이 바뀌었어요. 태그만 수정하거나 다시 만들어주세요.";
+                            : "단어나 숫자가 바뀌었어요. 태그만 수정하거나 다시 만들어주세요.";
         }
         autosave();
       });
