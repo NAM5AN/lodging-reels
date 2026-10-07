@@ -823,9 +823,50 @@
   }
 
   // ---------- ⑥ 소리 ----------
-  // 오디오는 에셋 저장소가 안 받아서 base64 텍스트로 넣는다. 그래야 새로고침해도 남는다.
-  var TRACKS=[{k:"tts", h:"나레이션", hint:"일레븐랩스에서 만든 mp3 를 올리세요."},
+  var TRACKS=[{k:"tts", h:"나레이션", hint:"오토태그 후 앱에서 바로 만들거나, 직접 만든 mp3 를 올릴 수 있어요."},
               {k:"bgm", h:"배경음악", hint:"영상 길이에 맞춰 반복 재생돼요."}];
+
+  function ttsSourceText(){
+    return scriptLines().join("\n").trim();
+  }
+  function stripAudioTags(s){
+    return String(s||"").replace(/\[[^\[\]\r\n]{1,200}\]/g,"");
+  }
+  function canonicalTtsSpeech(s){
+    return stripAudioTags(s).replace(/\s+/g," ").trim();
+  }
+  function tagsMatchScript(){
+    var source=ttsSourceText();
+    var tagged=String(current.ttsTagged||"").trim();
+    if(!source || !tagged) return false;
+    if(current.ttsTagSource!==source) return false;
+    return canonicalTtsSpeech(tagged)===canonicalTtsSpeech(source);
+  }
+  function invalidateTtsTags(){
+    current.ttsTagged="";
+    current.ttsTagSource="";
+  }
+
+  function ttsTagSection(){
+    var source=ttsSourceText();
+    var tagged=String(current.ttsTagged||"");
+    var fresh=tagsMatchScript();
+    var label=tagged ? "태그 다시 만들기" : "AI 오토태그 넣기";
+    return '<div class="trk">'+
+      '<div class="trkhead"><b>TTS 표현 태그</b>'+
+      '<span class="trkname">ElevenLabs 공식 Auto-tag 방식</span></div>'+
+      '<p class="hint" style="margin-top:0">대본 전체 흐름을 보고 [thoughtful], [excited], [short pause] 같은 음성 태그만 넣어요. 원문 문장은 바꾸지 않습니다.</p>'+
+      '<button type="button" class="primary" id="mktags" style="width:100%;margin-top:8px">'+label+'</button>'+
+      '<label for="f_ttsTagged" style="margin-top:12px">태그 적용 대본 <span>직접 태그 수정 가능</span></label>'+
+      '<textarea id="f_ttsTagged" style="min-height:150px" placeholder="먼저 AI 오토태그를 넣어주세요">'+esc(tagged)+'</textarea>'+
+      '<div style="display:flex;gap:8px;margin-top:8px">'+
+        '<button type="button" class="ghost" id="cleartags" style="flex:1">태그 지우기</button>'+
+      '</div>'+
+      '<p class="status'+(tagged&&!fresh?' bad':'')+'" id="tagstat">'+
+        (tagged ? (fresh ? "원문 보존 확인됨. TTS 생성 준비됐어요." : "대본이 바뀌었거나 원문과 달라요. 태그를 다시 만들어주세요.") : "")+
+      '</p>'+
+    '</div>';
+  }
 
   function trackRow(t){
     var rec=current[t.k], on=!(current[t.k+"Mute"]);
@@ -840,8 +881,8 @@
        '<input class="sr" type="file" accept="audio/*" id="aud_'+t.k+'" data-aud="'+t.k+'">';
     if(t.k==="tts"){
       h+='<button type="button" class="primary" id="mktts" style="width:100%;margin-top:8px">'+
-         '대본으로 목소리 만들기</button>'+
-         '<p class="hint" style="margin-top:6px">자막을 이어 읽어 음성을 만들어요. 몇 초 걸려요.</p>';
+         '태그 대본으로 목소리 만들기</button>'+
+         '<p class="hint" style="margin-top:6px">ElevenLabs v4로 생성해 프로젝트에 mp3로 저장해요.</p>';
     }
     if(rec){
       h+='<label class="trkline"><input type="checkbox" data-mute="'+t.k+'"'+(on?' checked':'')+'> 소리 켜기</label>'+
@@ -857,6 +898,7 @@
   function soundSection(){
     var fit=(current.fitToNar!==false);
     var h='<h2>⑥ 소리와 만들기</h2><div class="card">';
+    h+=ttsTagSection();
     TRACKS.forEach(function(t){ h+=trackRow(t); });
     h+='<label class="trkline" style="margin-top:12px">'+
        '<input type="checkbox" id="fitnar"'+(fit?' checked':'')+'> '+
@@ -869,6 +911,49 @@
        '<div class="tbox" id="thumbbox"></div>'+
        '<p class="status" id="vdstat"></p></div>';
     return h;
+  }
+
+  async function makeTtsTags(){
+    var st=function(m,bad){var e=document.getElementById("tagstat");
+      if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
+    if(!uid){ st("로그인이 필요해요.",true); return; }
+    var source=ttsSourceText();
+    if(!source){ st("대본을 먼저 만들어주세요.",true); return; }
+
+    st("대본 전체 흐름을 보고 자연스러운 Audio Tag를 고르는 중...");
+    var r;
+    try{
+      r=await api(FN.tts,{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"tag", text:source})
+      });
+    }catch(e){ st("오토태그 요청을 보내지 못했어요.",true); return; }
+
+    var t=await r.text();
+    if(!r.ok){
+      var code="", msg=t;
+      try{ var j=JSON.parse(t); code=j.error||""; msg=j.message||t; }catch(e){}
+      st(code==="rate_limited" ? "요청이 많아요. 잠시 뒤 다시 눌러주세요."
+        :code==="tag_integrity_failed" ? "AI가 원문을 건드려서 적용하지 않았어요. 다시 눌러주세요."
+        :code==="no_tag_key" ? "오토태그용 AI 키가 설정되지 않았어요."
+        :"오토태그에 실패했어요: "+String(msg).slice(0,120), true);
+      return;
+    }
+
+    var j2;
+    try{ j2=JSON.parse(t); }catch(e){ st("오토태그 응답을 읽지 못했어요.",true); return; }
+    var tagged=String(j2.text||"").trim();
+    if(!tagged || canonicalTtsSpeech(tagged)!==canonicalTtsSpeech(source)){
+      st("원문 보존 검사에 실패해서 적용하지 않았어요.",true); return;
+    }
+
+    current.ttsTagged=tagged;
+    current.ttsTagSource=source;
+    await persist(current);
+    var ta=document.getElementById("f_ttsTagged");
+    if(ta) ta.value=tagged;
+    st("원문 보존 확인됨. TTS 생성 준비됐어요.");
   }
 
   async function addAudio(file, kind){
@@ -907,30 +992,35 @@
     renderEdit(current);
   }
 
-  // 대본을 음성으로. 키는 Edge Function 안에 있어서 브라우저로 안 나온다.
+  // 태그가 적용된 대본을 ElevenLabs v4로 음성화한다.
   async function makeTTS(){
     var st=function(m,bad){var e=document.getElementById("vdstat");
       if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
     if(!uid){ st("로그인이 필요해요.",true); return; }
-    var txt=scriptLines().join(" ").replace(/\s+/g," ").trim();
-    if(!txt){ st("대본을 먼저 만들어주세요.",true); return; }
 
-    st("목소리를 만드는 중이에요... 10~30초 걸려요");
+    var source=ttsSourceText();
+    if(!source){ st("대본을 먼저 만들어주세요.",true); return; }
+    var txt=String(current.ttsTagged||"").trim();
+    if(!txt || !tagsMatchScript()){
+      st("먼저 TTS 표현 태그에서 AI 오토태그를 넣어주세요.",true); return;
+    }
+
+    st("ElevenLabs v4로 목소리를 만드는 중이에요... 10~30초 걸려요");
     var r;
     try{
       r=await api(FN.tts,{
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({text:txt})
+        body:JSON.stringify({action:"synthesize", text:txt, model:"eleven_v4"})
       });
     }catch(e){ st("요청을 보내지 못했어요.",true); return; }
 
     if(!r.ok){
       var t=await r.text(), code="";
       try{ var j=JSON.parse(t); code=j.error||""; t=j.message||t; }catch(e){}
-      st(code==="no_key"  ? "TTS 키가 설정되지 않았어요."
-        :code==="bad_key" ? "TTS 키가 잘못됐어요."
-        :code==="no_voice"? "목소리 ID 가 설정되지 않았어요."
+      st(code==="no_key"  ? "ElevenLabs API 키가 설정되지 않았어요."
+        :code==="bad_key" ? "ElevenLabs API 키가 잘못됐어요."
+        :code==="no_voice"? "ElevenLabs Voice ID 가 설정되지 않았어요."
         :code==="rate_limited" ? "요청이 많아요. 잠시 뒤 다시 눌러주세요."
         :"목소리를 만들지 못했어요: "+String(t).slice(0,120), true);
       return;
@@ -1326,6 +1416,7 @@
     current.script=lines.join("\n");
     current.map=[];
     current.cover=cvText;
+    invalidateTtsTags();
     await persist(current);
     renderEdit(current);
 
@@ -1781,7 +1872,11 @@
     ["cover","script"].forEach(function(k){
       var el=document.getElementById("f_"+k);
       if(!el) return;
-      el.addEventListener("input",function(){ current[k]=el.value; autosave(); });
+      el.addEventListener("input",function(){
+        current[k]=el.value;
+        if(k==="script") invalidateTtsTags();
+        autosave();
+      });
       el.addEventListener("blur",function(){ current[k]=el.value; flushSave(); });
     });
     var ms=document.getElementById("mkscript");
@@ -1803,6 +1898,36 @@
           }
         });
       }
+    });
+    var tagBtn=document.getElementById("mktags");
+    if(tagBtn) tagBtn.addEventListener("click",async function(){
+      tagBtn.disabled=true;
+      try{ await makeTtsTags(); } finally{
+        var tb=document.getElementById("mktags"); if(tb) tb.disabled=false; }
+    });
+    var tagArea=document.getElementById("f_ttsTagged");
+    if(tagArea){
+      tagArea.addEventListener("input",function(){
+        current.ttsTagged=tagArea.value;
+        var ok=canonicalTtsSpeech(tagArea.value)===canonicalTtsSpeech(ttsSourceText());
+        if(ok) current.ttsTagSource=ttsSourceText();
+        else current.ttsTagSource="";
+        var se=document.getElementById("tagstat");
+        if(se){
+          se.className="status"+(ok?"":" bad");
+          se.textContent=ok ? "원문 보존 확인됨. TTS 생성 준비됐어요."
+                            : "원문이 바뀌었어요. 태그만 수정하거나 다시 만들어주세요.";
+        }
+        autosave();
+      });
+      tagArea.addEventListener("blur",flushSave);
+    }
+    var clearTags=document.getElementById("cleartags");
+    if(clearTags) clearTags.addEventListener("click",function(){
+      invalidateTtsTags();
+      var ta=document.getElementById("f_ttsTagged"); if(ta) ta.value="";
+      var se=document.getElementById("tagstat"); if(se){se.textContent="";se.className="status";}
+      flushSave();
     });
     var mkt=document.getElementById("mktts");
     if(mkt) mkt.addEventListener("click",async function(){
