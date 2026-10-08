@@ -909,6 +909,7 @@
       current.ttsProcessedRawId===current.ttsRaw.id &&
       current.ttsProcessedVersion===ReelsMedia.VERSION &&
       current.ttsScriptSource===ttsSourceText() &&
+      current.ttsRawTagText===String(current.ttsTagged||"").trim() &&
       current.cutTimelineFor===current.script &&
       current.cutTimelineAudioId===current.tts.id &&
       Array.isArray(current.cutTimeline) &&
@@ -1006,48 +1007,169 @@
   }
 
   // 태그가 적용된 대본을 ElevenLabs v4로 음성화한다.
+  // base64 로 수신한 MP3는 음성 파일만 Storage에 저장한다.
+  // 문자별 시간은 프로젝트의 metadata로 별도 저장해 재생성 시 비용을 아낀다.
+  function mp3FromBase64(encoded){
+    var clean=String(encoded||"").replace(/\s/g,"");
+    var bytes=atob(clean), out=new Uint8Array(bytes.length);
+    for(var i=0;i<bytes.length;i++)out[i]=bytes.charCodeAt(i);
+    return new Blob([out],{type:"audio/mpeg"});
+  }
+
+  // ⑤ ElevenLabs v4 음성과 실제 문자별 타임스탬프를 함께 받는다.
   async function makeTTS(){
     var st=function(m,bad){var e=document.getElementById("vdstat");
       if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
     if(!uid){ st("로그인이 필요해요.",true); return; }
-
     var source=ttsSourceText();
     if(!source){ st("대본을 먼저 만들어주세요.",true); return; }
-    var txt=String(current.ttsTagged||"").trim();
-    if(!txt || !tagsMatchScript()){
-      st("먼저 TTS 표현 태그에서 AI 오토태그를 넣어주세요.",true); return;
+    var tagged=String(current.ttsTagged||"").trim();
+    if(!tagged || !tagsMatchScript()){
+      st("먼저 ④ 오토태그를 완료해주세요.",true); return;
     }
-
-    st("ElevenLabs v4로 목소리를 만드는 중이에요... 10~30초 걸려요");
+    st("ElevenLabs v4 음성과 타임스탬프를 함께 만드는 중...");
     var r;
     try{
       r=await api(FN.tts,{
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({action:"synthesize", text:txt, model:"eleven_v4"})
+        body:JSON.stringify({action:"synthesize_timed",text:tagged,model:"eleven_v4"})
       });
-    }catch(e){ st("요청을 보내지 못했어요.",true); return; }
-
+    }catch(e){ st("ElevenLabs에 연결하지 못했어요.",true); return; }
+    var data;
+    try{ data=await r.json(); }
+    catch(e){ st("TTS 응답을 읽지 못했어요.",true); return; }
     if(!r.ok){
-      var t=await r.text(), code="";
-      try{ var j=JSON.parse(t); code=j.error||""; t=j.message||t; }catch(e){}
-      st(code==="no_key"  ? "ElevenLabs API 키가 설정되지 않았어요."
-        :code==="bad_key" ? "ElevenLabs API 키가 잘못됐어요."
-        :code==="no_voice"? "ElevenLabs Voice ID 가 설정되지 않았어요."
-        :code==="rate_limited" ? "요청이 많아요. 잠시 뒤 다시 눌러주세요."
-        :"목소리를 만들지 못했어요: "+String(t).slice(0,120), true);
+      var code=data.error||"", msg=String(data.message||code);
+      st(code==="no_key" ? "ElevenLabs API 키를 Supabase Secrets에 넣어주세요."
+        :code==="no_voice" ? "ElevenLabs 목소리 ID를 설정해주세요."
+        :code==="rate_limited" ? "TTS 요청 제한에 걸렸어요. 잠시 뒤 시도해주세요."
+        :"음성 생성 실패: "+msg.slice(0,170),true);
       return;
     }
-
+    if(!data.audio_base64 || !data.alignment){
+      st("음성 또는 문자별 타임스탬프가 없어서 진행을 멈췄어요.",true); return;
+    }
     try{
-      var blob=await r.blob();
-      if(blob.size < 500){ st("빈 음성이 왔어요. 설정을 확인해주세요.",true); return; }
+      var mp3=mp3FromBase64(data.audio_base64);
+      if(mp3.size<500)throw new Error("생성된 MP3가 너무 작아요.");
+      var up=await storeUpload(newPath(current.id,"ttsraw","mp3"),mp3,"audio/mpeg");
+      var oldRaw=current.ttsRaw;
+      current.ttsRaw={id:up.id,name:"나레이션_원본.mp3",mime:"audio/mpeg",bytes:up.sizeBytes};
+      current.ttsRawTagText=tagged;
+      current.ttsScriptSource=source;
+      current.ttsAlignment=data.alignment;
+      current.ttsNormalizedAlignment=data.normalized_alignment||null;
+      current.tts=null;
+      current.ttsProcessedRawId="";
+      current.ttsProcessedVersion="";
+      current.ttsDuration=0;
+      current.cutTimeline=[];
+      current.cutTimelineFor="";
+      current.cutTimelineAudioId="";
+      var saved=await persist(current);
+      renderEdit(current);
+      var el=document.getElementById("vdstat");
+      if(el){el.className="status"+(saved?"":" bad");el.textContent=saved
+        ?"MP3와 발화 시간을 저장했어요. 다음으로 ⑥ 음성 후처리를 진행하세요."
+        :"음성은 생성됐지만 프로젝트 저장에 실패했어요. 다시 저장해주세요.";}
+      if(saved && oldRaw && oldRaw.id!==up.id){
+        try{await storeDelete(oldRaw.id);}catch(e){}
+      }
+    }catch(e){
+      st("TTS 파일 저장 실패: "+String(e&&e.message||e).slice(0,140),true);
+    }
+  }
+
+  // ⑥ 속도를 1.2배 높이되 피치는 +0.2반음만 올린다.
+  async function makeAudioProcessed(){
+    var st=function(m,bad){var e=document.getElementById("poststat");
+      if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
+    if(!current || !current.ttsRaw || !current.ttsAlignment ||
+       current.ttsScriptSource!==ttsSourceText() ||
+       current.ttsRawTagText!==String(current.ttsTagged||"").trim()){
+      st("⑤ TTS를 먼저 생성하거나, 바뀐 오토태그로 다시 만들어주세요.",true);return;
+    }
+    var rawId=current.ttsRaw.id;
+    if(!window.ReelsMedia){st("음성 후처리 도구를 불러오지 못했어요. 새로고침해주세요.",true);return;}
+    st("음성 디코딩 후 1.2배속·피치 +0.2반음을 별도로 적용하는 중...");
+    try{
+      var r=await fetch(blobUrl(rawId));
+      if(!r.ok)throw new Error("원본 MP3를 불러오지 못했어요.");
+      var processed=await ReelsMedia.processAudio(await r.blob());
+      if(rawId!==(current.ttsRaw&&current.ttsRaw.id))return;
+      st("후처리 WAV 파일을 저장하는 중...");
+      var up=await storeUpload(newPath(current.id,"tts","wav"),processed.blob,"audio/wav");
+      var old=current.tts;
+      current.tts={id:up.id,name:"나레이션_1.2배_피치0.2.wav",
+        mime:"audio/wav",bytes:processed.blob.size};
+      current.ttsProcessedRawId=rawId;
+      current.ttsProcessedVersion=processed.version;
+      current.ttsDuration=processed.duration;
       current.ttsMute=false;
-      await putAudio(blob, "tts", "나레이션.mp3");
-      var e2=document.getElementById("vdstat");
-      if(e2){ e2.className="status";
-        e2.textContent="목소리를 만들었어요 ("+(blob.size/1024).toFixed(0)+"KB). 영상 만들기를 누르세요."; }
-    }catch(e){ st("저장하지 못했어요.",true); }
+      current.cutTimeline=[];
+      current.cutTimelineFor="";
+      current.cutTimelineAudioId="";
+      var saved=await persist(current);
+      renderEdit(current);
+      var el=document.getElementById("poststat");
+      if(el){el.className="status"+(saved?"":" bad");el.textContent=saved
+        ?"후처리 완료 ("+processed.originalDuration.toFixed(2)+"초 → "+
+          processed.duration.toFixed(2)+"초). 다음은 ⑦ 컷 싱크예요."
+        :"후처리는 성공했지만 저장에 실패했어요.";}
+      if(saved && old && old.id!==up.id)try{await storeDelete(old.id);}catch(e){}
+    }catch(e){
+      st("후처리 실패: "+String(e&&e.message||e).slice(0,160),true);
+    }
+  }
+
+  // ⑦ ElevenLabs 문자별 발화 타이밍으로 원래 자막 줄에 시간을 할당한다.
+  async function makeSyncedCuts(){
+    var st=function(m,bad){var e=document.getElementById("syncstat");
+      if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
+    if(!current || !current.tts || !current.ttsRaw ||
+       current.ttsProcessedRawId!==current.ttsRaw.id ||
+       current.ttsProcessedVersion!==ReelsMedia.VERSION ||
+       current.ttsScriptSource!==ttsSourceText()){
+      st("⑤ TTS 생성과 ⑥ 후처리를 먼저 완료해주세요.",true);return;
+    }
+    if(current.ttsRawTagText!==String(current.ttsTagged||"").trim()){
+      st("오토태그가 바뀌었어요. ⑤ TTS를 다시 생성해주세요.",true);return;
+    }
+    st("실제 발화 시각과 각 컷 자막을 대조하는 중...");
+    var cuts=scriptLines(), timeline=null, err=null;
+    var candidates=[current.ttsAlignment,current.ttsNormalizedAlignment];
+    for(var k=0;k<candidates.length;k++){
+      if(!candidates[k])continue;
+      try{
+        timeline=ReelsMedia.timelineFromAlignment(
+          cuts,candidates[k],Number(current.ttsDuration),ReelsMedia.SPEED);
+        break;
+      }catch(e){err=e;}
+    }
+    if(!timeline){
+      st("자동 싱크 불가: "+String(err&&err.message||"타임스탬프 불일치").slice(0,170),true);
+      return;
+    }
+    current.cutTimeline=timeline;
+    current.cutTimelineFor=current.script;
+    current.cutTimelineAudioId=current.tts.id;
+    var saved=await persist(current);
+    renderEdit(current);
+    var el=document.getElementById("syncstat");
+    if(el){el.className="status"+(saved?"":" bad");el.textContent=saved
+      ?"정확한 컷 시작·끝 시간 "+timeline.length+"개 저장 완료. ⑧ 사진 선택으로 진행하세요."
+      :"컷 타이밍 계산은 끝났지만 저장하지 못했어요.";}
+  }
+
+  async function downloadProcessed(){
+    if(!current || !current.tts){toast("⑥ 음성 후처리를 먼저 해주세요.");return;}
+    try{
+      var r=await fetch(blobUrl(current.tts.id));
+      if(!r.ok)throw new Error("파일을 불러올 수 없어요.");
+      await downloads.save({filename:(current.folder||"reels")+"_1.2x_pitch+0.2.wav",
+        data:await r.blob()});
+    }catch(e){toast("WAV 다운로드에 실패했어요.");}
   }
 
   var audioCache={};
@@ -1982,6 +2104,22 @@
       var se=document.getElementById("tagstat"); if(se){se.textContent="";se.className="status";}
       flushSave();
     });
+    var postBtn=document.getElementById("mkpost");
+    if(postBtn)postBtn.addEventListener("click",async function(){
+      postBtn.disabled=true;
+      try{await makeAudioProcessed();}finally{
+        var b=document.getElementById("mkpost");if(b)b.disabled=false;
+      }
+    });
+    var syncBtn=document.getElementById("mksync");
+    if(syncBtn)syncBtn.addEventListener("click",async function(){
+      syncBtn.disabled=true;
+      try{await makeSyncedCuts();}finally{
+        var b=document.getElementById("mksync");if(b)b.disabled=false;
+      }
+    });
+    var dlPost=document.getElementById("dlpost");
+    if(dlPost)dlPost.addEventListener("click",downloadProcessed);
     var mkt=document.getElementById("mktts");
     if(mkt) mkt.addEventListener("click",async function(){
       mkt.disabled=true;
