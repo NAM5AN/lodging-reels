@@ -971,7 +971,7 @@
   }
 
   async function addAudio(file, kind){
-    var st=function(m,bad){var e=document.getElementById("vdstat");
+    var st=function(m,bad){var e=document.getElementById("renderstat");
       if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
     if(!uid){ st("로그인이 필요해요.",true); return; }
     if(file.size > 45*1024*1024){ st("파일이 너무 커요. 45MB 아래로 줄여주세요.",true); return; }
@@ -1725,7 +1725,7 @@
 
   async function makeThumb(){
     var box=document.getElementById("thumbbox");
-    var st=function(m,bad){var e=document.getElementById("vdstat");
+    var st=function(m,bad){var e=document.getElementById("renderstat");
       if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
     if(!box) return;
     if(!(current.photos||[]).length){ st("사진을 먼저 올려주세요. 첫 장이 썸네일이 돼요.",true); return; }
@@ -1771,10 +1771,16 @@
   }
 
   async function makeVideo(){
-    var st=function(m,bad){var e=document.getElementById("vdstat");
+    var st=function(m,bad){var e=document.getElementById("renderstat");
       if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
     var photos=current.photos||[];
-    if(!photos.length){ st("영상에 들어갈 사진을 먼저 올려주세요.",true); return; }
+    if(!timelineReady()){
+      st("⑦ 음성 싱크를 먼저 완료해주세요. 0.9초 균등 배치로 만들지 않습니다.",true);return;
+    }
+    if(!current.tts || !current.ttsRaw || current.ttsProcessedRawId!==current.ttsRaw.id){
+      st("⑥ 후처리 음성 파일이 없어요.",true);return;
+    }
+    if(!photos.length){ st("⑧ 사진 소스를 먼저 올려주세요.",true); return; }
     if(!window.MediaRecorder){ st("이 브라우저는 영상 녹화를 지원하지 않아요.",true); return; }
     var mime=pickMime();
     if(!mime){ st("이 브라우저가 만들 수 있는 영상 형식이 없어요.",true); return; }
@@ -1808,8 +1814,9 @@
         if(useNar) narBuf=await loadAudio(actx, current.tts);
         if(useBgm) bgmBuf=await loadAudio(actx, current.bgm);
       }catch(e){
-        st("소리를 불러오지 못했어요. 소리 없이 만들게요.");
-        actx=null; dest=null; narBuf=null; bgmBuf=null;
+        st("소리를 불러오지 못했어요. 음성 싱크가 깨질 수 있어 영상 제작을 중단합니다.",true);
+        if(actx)try{await actx.close();}catch(e2){}
+        return;
       }
     }
 
@@ -1844,12 +1851,12 @@
       runFrom.push(a2); runLen.push(b2-a2+1);
     }
 
-    var coverMs=VIDEO.coverHold*1000, cutMs=VIDEO.cut*1000;
-    // 나레이션이 있으면 컷이 음성 길이에 맞춰 늘어난다.
-    if(narBuf && current.fitToNar!==false && N>0){
-      cutMs=Math.max(500, (narBuf.duration*1000)/N);
-    }
-    var total=coverMs+cutMs*N;
+    // 자막별 실제 발화 시각을 사용한다. 컷당 0.9초/음성 균등분할 금지.
+    var coverMs=VIDEO.coverHold*1000;
+    var windows=current.cutTimeline;
+    if(windows.length!==N){st("컷 수와 싱크 수가 달라요. ⑦에서 다시 배치해주세요.",true);return;}
+    var voiceMs=narBuf ? narBuf.duration*1000 : Number(current.ttsDuration)*1000;
+    var total=coverMs+voiceMs;
 
     var vol=function(k,d){
       var v=current[k+"Vol"];
@@ -1882,9 +1889,15 @@
         if(el>=total){ res(); return; }
         if(el<coverMs){ drawCover(g,imgs[cIdx],cover); }
         else{
-          var idx=Math.min(N-1, Math.floor((el-coverMs)/cutMs));
-          var inCut=((el-coverMs)-idx*cutMs)/cutMs;
-          var k=(idx-runFrom[idx]+inCut)/runLen[idx];
+          var rel=(el-coverMs)/1000, lo=0, hi=N-1;
+          while(lo<hi){
+            var mid=(lo+hi+1)>>1;
+            if(windows[mid].start<=rel)lo=mid;else hi=mid-1;
+          }
+          var idx=lo;
+          var runStart=windows[runFrom[idx]].start;
+          var runEnd=windows[runFrom[idx]+runLen[idx]-1].end;
+          var k=Math.max(0,Math.min(1,(rel-runStart)/Math.max(0.01,runEnd-runStart)));
           drawCut(g,imgs[span[idx]],cuts[idx]||"",k);
         }
         st("만드는 중... "+Math.round(el/total*100)+"%  (화면을 끄지 마세요)");
