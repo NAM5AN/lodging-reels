@@ -1,0 +1,24 @@
+name: Validate reel workflow
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check JS syntax
+        run: node --check reels-media.js
+      - name: Test timeline and verify original scriptPrompt
+        run: node --test tests/reels-media.test.cjs
