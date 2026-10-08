@@ -160,7 +160,9 @@
      hint:"영상에 그대로 나가요. 거리보다 시간이 잘 먹혀요.",
      ph:"제주공항에서 차로 40분 / 바다까지 도보 2분"},
     {k:"type", h:"숙소 유형", type:"text", ph:"독채 펜션"},
-    {k:"people", h:"수용 인원", type:"text", ph:"최대 6인"},
+    {k:"people", h:"수용 인원", type:"text",
+     hint:"가격이 몇 명 값인지예요. 비워 두면 금액 줄을 못 믿게 돼요.",
+     ph:"2인 기준 (최대 6인)"},
     {k:"price", h:"가격대", type:"text", ph:"비수기 평일 18만원대 / 성수기 주말 32만원대"},
     {k:"perks", h:"확인된 혜택", type:"textarea",
      hint:"한 줄에 하나씩. 확실한 것만. 여기 없는 건 영상에서 말 안 해요.",
@@ -173,7 +175,10 @@
     {k:"hide", h:"영상에 넣으면 안 되는 것", type:"textarea",
      ph:"정확한 주소\n숙소 공식 계정 아이디"},
     {k:"deal", h:"제휴 여부", type:"select", opts:["유상 제휴","무상 제공","제휴 없음"]},
-    {k:"memo", h:"추가 메모", type:"textarea", ph:"겨울 성수기 예약이 빨리 차는 편."}
+    {k:"memo", h:"제약 조건", type:"textarea",
+     hint:"돈이 드는 것 · 안 되는 것 · 조건이 붙는 것. 금액은 그대로 적으세요. "+
+          "여기 적은 항목은 대본에서 공짜처럼 쓰이지 않게 막아요.",
+     ph:"발레파킹 이용 시 20,000원\n인원 추가비: 성인 1박당 72,600원\n공항 셔틀 사전예약 필수"}
   ];
 
   // 대본을 어떤 각도로 쓸지. 숙소의 속성이 아니라 이번 영상의 연출 선택이라
@@ -763,9 +768,32 @@
   }
 
   // ---------- ③ 대본 ----------
+  // 경고는 대본만 보고 나오는 게 아니라 ② 입력값(제약 조건·인원·지역)에도 걸린다.
+  // 그래서 생성 직후 한 번만 찍으면 안 되고, 화면을 다시 그릴 때마다 다시 계산해야 한다.
+  function scStat(){
+    var lines=scriptLines();
+    if(!lines.length) return {text:"", bad:false};
+    var w=sceneWarnings(lines).concat(scriptWarnings(lines));
+    var len=(lines.length*VIDEO.cut+VIDEO.coverHold).toFixed(1);
+    return {
+      bad: !!w.length,
+      text: "자막 "+lines.length+"줄 · 약 "+len+"초."+
+            (w.length ? "  손봐야 할 곳: "+w.join(" / ")
+                      : "  규칙 검사 통과.")
+    };
+  }
+
+  function refreshScStat(){
+    var e=document.getElementById("scstat");
+    if(!e) return;
+    var st=scStat();
+    e.className="status"+(st.bad?" bad":"");
+    e.textContent=st.text;
+  }
+
   function scriptSection(){
     var sc=(current.script||""), cv=(current.cover||"");
-    var C=cutCount(), L=targetLines();
+    var C=cutCount(), L=targetLines(), st=scStat();
     var len=(C*VIDEO.cut + VIDEO.coverHold).toFixed(1);
     var opts=[14,16,18,20,22,24,26].map(function(v){
       return '<option value="'+v+'"'+(v===L?' selected':'')+'>'+v+'컷</option>'; }).join("");
@@ -782,7 +810,7 @@
         '<select id="f_lines" style="width:110px">'+opts+'</select>'+
         '<button type="button" id="mkscript" style="flex:1">대본 만들기</button>'+
       '</div>'+
-      '<p class="status" id="scstat"></p>'+
+      '<p class="status'+(st.bad?' bad':'')+'" id="scstat">'+esc(st.text)+'</p>'+
       '<label for="f_cover">커버 문구 <span>1줄째 = 윗줄(작게) · 2줄째 = 아랫줄(크게)</span></label>'+
       '<textarea id="f_cover" style="min-height:64px" placeholder="아무리 봐도&#10;가격이 잘못됐어요">'+esc(cv)+'</textarea>'+
       '<button type="button" id="swapcover" style="width:100%;margin-top:6px">두 줄 바꾸기</button>'+
@@ -1245,7 +1273,21 @@
       "# 숙소 정보 (여기 있는 것만 사실로 쓰세요. 없는 건 쓰지 마세요)\n"+
       "숙소명: "+f("name")+"\n지역: "+f("area")+"\n접근성: "+f("access")+"\n"+
       "유형: "+f("type")+"\n인원: "+f("people")+"\n가격: "+f("price")+"\n"+
-      "혜택:\n"+f("perks")+"\n메모:\n"+f("memo")+"\n"+
+      "혜택 (이건 자랑해도 되는 것):\n"+f("perks")+"\n\n"+
+      "제약 조건 (이건 혜택이 아니에요):\n"+f("memo")+"\n"+
+      "  ↑ 위는 돈이 드는 것, 안 되는 것, 조건이 붙는 것이에요.\n"+
+      "  혜택으로 뒤집지 마세요. 유료인 걸 공짜처럼 쓰면 DM 받은 사람이 바로 돌아섭니다.\n"+
+      "  쓰려면 조건을 같은 줄에 붙이세요. 자신 없으면 아예 빼세요.\n"+
+      "  '혜택' 쪽에 적힌 항목도 괄호 안에 유료 표시가 있으면 그 부분은 제약이에요.\n"+
+      (function(){
+        // 입력에서 돈이 드는 항목을 미리 뽑아 이름으로 못박는다.
+        // 규칙으로만 말하면 모델이 '조식까지' 처럼 공짜인 양 흘려 쓴다.
+        var t=paidTerms();
+        if(!t.length) return "";
+        return "  돈이 드는 항목: "+t.join(" · ")+"\n"+
+               "  이 단어들은 조건 없이 쓰지 마세요. '○○까지' 처럼 혜택 목록에 끼워 넣으면 안 돼요.\n"+
+               "  쓰려면 같은 줄에 유료라는 걸 적고, 자신 없으면 아예 빼세요.\n";
+      })()+"\n"+
       "댓글 키워드: "+kw+"\n\n"+
 
       "# 분량\n"+
@@ -1368,7 +1410,15 @@
       "   금지: 숙소명, 주소, 입점 브랜드명, 캐릭터 룸 이름, 스파·레스토랑 상호,\n"+
       "         '420석' 같은 검색되는 고유 수치.\n"+
       "   대신 등급·규모로만 말하세요.\n"+
-      "   지역은 '"+(f("area")||"").split(" ")[0]+"' 정도의 넓은 범위까지만 허용해요.\n\n"+
+      (function(){
+        var wide=areaWide(), narrow=areaNarrow();
+        var t="   지역은 '"+wide+"' 까지만 써도 돼요. 그보다 좁은 지명은 쓰지 마세요.\n";
+        if(narrow.length)
+          t+="   "+narrow.map(function(x){return "'"+x+"'"}).join(" · ")+
+             " 은(는) 쓰면 안 돼요. 한 번도요. 거기에 이 조건이면 바로 특정돼요.\n";
+        t+="   그리고 위치를 알려주면 댓글을 달 이유가 사라져요. 위치는 DM 에서 주는 겁니다.\n";
+        return t;
+      })()+"\n"+
 
       "8. 마지막 3~4줄은 '정보'가 아니라 '돈이 되는 것'을 약속하세요.\n"+
       "   순서: 남들이 모른다는 암시 → 약속 → 키워드 지정 → 즉시 보내준다는 약속.\n"+
@@ -1428,6 +1478,16 @@
   }
 
   // ---------- 검사 ----------
+  // 지역 입력은 '서귀포시 중문' 처럼 넓은 곳 + 좁은 곳으로 들어온다.
+  // 첫 단어까지만 허용하고 그 뒤는 전부 금지어다. 프롬프트와 검사가 같은 목록을 봐야 한다.
+  function areaWide(){ return ((current.area||"").trim().split(/\s+/)[0]||""); }
+  function areaNarrow(){
+    var parts=(current.area||"").trim().split(/\s+/).filter(Boolean).slice(1);
+    return parts.filter(function(w){
+      // '20', '(캡션 기준)' 같은 토막과 행정구역 접미사만 남은 말은 금지어로 쓸 수 없다.
+      return /^[가-힣]{2,}$/.test(w) && w!=="기준";
+    });
+  }
   var RE_WON=/[0-9][0-9,]{3,}\s*원/;
   var RE_META=/(이름|상호|어디인지|위치).{0,4}(못|안|비밀|공개)|비밀이라서|말 ?못/;
   // 사람이 뭘 하고 있는 줄 = 장면. 시설 이름만 있는 줄 = 사양.
@@ -1471,6 +1531,41 @@
 
   // 시설만 세고 있는 대본은 "좋은 숙소 소개" 로 끝나고 가고 싶어지지 않는다.
   // 한 줄 고쳐서 될 일이 아니라 전체를 다시 써야 하므로, 수리 루프와 분리해 보고만 한다.
+  // 입력에서 '돈 드는 항목' 을 뽑는다.
+  // 한 줄에 무료와 유료가 섞여 있다(예: '실내 수영장 무료 이용 (사우나는 유료: 15,000원)').
+  // 금액 앞 N자만 보면 줄 맨 앞의 항목 이름('조식')에 못 닿고 중간 토막('트라베드')만 잡힌다.
+  // 그래서 줄에 '무료' 가 있는지로 갈라서 본다.
+  var PAID_STOP=("성인|소인|유아|인원|이용|유료|추가|추가비|추가요금|요금|제공|할인가|할인|기준|당|"+
+    "부터|까지|원|결제|현장|가능|미만|이상|시|인|박|박당|명|경우|포함|별도|이하|초과|기타|"+
+    "사전|예약|투숙객|기본|옵션|선택|무료|공짜|운영|상품").split("|");
+  var RE_MONEY=/[0-9][0-9,]{2,}\s*원/;
+  function stripJosa(w){
+    return w.length>2 ? w.replace(/(은|는|이|가|도|만|의|에서|에|을|를|와|과|까지|부터)$/,"") : w;
+  }
+  function paidTerms(){
+    var src=((current.perks||"")+"\n"+(current.memo||""));
+    var out={};
+    function take(w){
+      w=stripJosa(w);
+      if(w.length>=2 && PAID_STOP.indexOf(w)<0) out[w]=1;
+    }
+    src.split(/\n/).forEach(function(line){
+      if(!RE_MONEY.test(line)) return;
+      if(/무료|공짜|포함/.test(line)){
+        // 무료 항목에 유료 항목이 딸린 줄. 괄호 안과 '유료' 바로 앞만 본다.
+        var segs=line.match(/[(（][^)）]*[)）]/g)||[];
+        var k=line.indexOf("유료");
+        if(k>=0) segs.push(line.slice(Math.max(0,k-14), k));
+        segs.forEach(function(sg){ (sg.match(/[가-힣]{2,}/g)||[]).forEach(take); });
+      }else{
+        // 줄 전체가 돈 드는 항목. 줄 맨 앞 명사가 항목 이름이다.
+        var m=line.match(/^[\s·\-*•]*([가-힣]{2,})/);
+        if(m) take(m[1]);
+      }
+    });
+    return Object.keys(out);
+  }
+
   // 문장을 닫은 줄. 레퍼런스 24개에서 상위 8개는 최대 13.9%,
   // 25% 를 넘긴 대본(A-01 30.8% / A-04 28.6% / A-02 26.3%)은 전부 최하위였다.
   var RE_CLOSED=/(요|다|니다|죠|까)$/;
@@ -1516,8 +1611,6 @@
     }).length;
     if(long12/lines.length > 0.10) w.push("12자 넘는 줄 "+long12+"/"+lines.length);
 
-    if(!(current.people||"").trim() && lines.some(function(t){ return /만원|원대|\d{2,}원/.test(t) }))
-      w.push("인원 기준 비어 있음");
 
     // 마지막 두 줄은 닫아야 하므로 세지 않는다.
     var body=lines.slice(0, Math.max(0, lines.length-2));
@@ -1526,6 +1619,31 @@
       if(closed/body.length > 0.15)
         w.push("문장을 닫은 줄 "+closed+"/"+body.length+" (15% 이하로)");
     }
+
+    // 돈 드는 걸 공짜처럼 쓰면 DM 받은 사람이 바로 돌아선다.
+    var paid=paidTerms(), hit={};
+    lines.forEach(function(t){
+      paid.forEach(function(term){ if(t.indexOf(term)>=0) hit[term]=1; });
+    });
+    var hits=Object.keys(hit);
+    if(hits.length) w.push("돈 드는 항목이 조건 없이 나왔어요: "+hits.slice(0,3).join("·"));
+
+    // 인원 기준이 없으면 금액이 몇 명 값인지 모른다.
+    // 추가비까지 있으면 4인 기준으로 14만원이 더 붙는데 3만원대로만 노출되므로 경고를 세게 쓴다.
+    if(!(current.people||"").trim()
+       && lines.some(function(t){ return /만원|원대|\d{2,}원/.test(t) }))
+      w.push(/추가비|추가 ?요금|인원 추가|엑스트라/.test(current.memo||"")
+        ? "인원 추가비가 있는데 인원 기준이 비었어요 — ② 인원 칸 채우세요"
+        : "인원 기준 비어 있음");
+
+    // 좁은 지명은 숙소를 특정하고, 위치를 알려주면 댓글 달 이유가 사라진다.
+    // 댓글 키워드가 그 지명이면 CTA 줄이 걸린다. 그건 일부러 쓰는 거라 빼고 센다.
+    var kwNow=(current.keyword||"").trim();
+    areaNarrow().forEach(function(narrow){
+      if(narrow===kwNow) return;
+      var n=lines.filter(function(t){ return t.indexOf(narrow)>=0 }).length;
+      if(n) w.push("좁은 지명 '"+narrow+"' "+n+"회");
+    });
 
     var hearsay=lines.filter(function(t){ return RE_HEARSAY.test(t.trim()) }).length;
     if(hearsay) w.push("전해 들은 투 "+hearsay+"줄");
@@ -1717,12 +1835,10 @@
 
     var e2=document.getElementById("scstat");
     if(e2){
-      var left=summarize(probs).concat(sceneWarnings(lines)).concat(scriptWarnings(lines));
-      e2.className="status"+(left.length?" bad":"");
-      e2.textContent="자막 "+lines.length+"줄 · 약 "+
-        (lines.length*VIDEO.cut+VIDEO.coverHold).toFixed(1)+"초."+
-        (left.length ? "  못 고친 곳: "+left.join(" / ")+". 직접 손봐주세요."
-                     : "  규칙 검사 통과. 읽어보고 사진을 올리세요.");
+      // 줄 단위로 고치다 남은 것(summarize)과 전체 검사를 합쳐 보여준다.
+      var st=scStat(), rest=summarize(probs);
+      e2.className="status"+((st.bad||rest.length)?" bad":"");
+      e2.textContent=st.text+(rest.length?"  남은 줄 문제: "+rest.join(" / "):"");
     }
   }
 
@@ -2183,7 +2299,7 @@
       if(!el) return;
       el.addEventListener("input",function(){
         current[k]=el.value;
-        if(k==="script") invalidateTtsTags();
+        if(k==="script"){ invalidateTtsTags(); refreshScStat(); }
         autosave();
       });
       el.addEventListener("blur",function(){ current[k]=el.value; flushSave(); });
