@@ -22,3 +22,7 @@ jobs:
         run: node --check reels-media.js
       - name: Test timeline and verify original scriptPrompt
         run: node --test tests/reels-media.test.cjs
+      - name: Check SoundTouch audio processing CDN assets
+        run: |
+          curl --fail --location --silent --show-error --head --retry 2 'https://esm.sh/@soundtouchjs/audio-worklet@2.1.1'
+          curl --fail --location --silent --show-error --head --retry 2 'https://cdn.jsdelivr.net/npm/@soundtouchjs/audio-worklet@2.1.1/.dist/soundtouch-processor.js'
