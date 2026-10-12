@@ -1082,7 +1082,7 @@
       '<label for="ttsVoiceId">Voice ID <span>선택 · 비워두면 Supabase에 등록된 목소리</span></label>'+
       '<input type="text" id="ttsVoiceId" autocomplete="off" spellcheck="false" value="'+esc(current.ttsVoiceId||"")+'" placeholder="ElevenLabs Voice ID (선택)">'+
       '<p class="hint">모델 Eleven v4 · 언어 한국어 · 출력 MP3 44.1kHz / 128kbps</p>'+
-      '<p class="hint">Speed 1.2배 · Pitch +0.2반음은 ⑥ 음성 후처리에서 적용해요. Eleven v4는 Speed·Style 조절을 직접 지원하지 않아요.</p>'+
+      '<p class="hint">Speed 1.2배 · Pitch +1반음은 ⑥ 음성 후처리에서 적용해요. Eleven v4는 Speed·Style 조절을 직접 지원하지 않아요.</p>'+
       '<p class="status'+(changed?' bad':'')+'" id="ttsChangeNotice">'+
       (changed?'음성 설정이 바뀌었어요. 새 설정을 쓰려면 ⑤ TTS를 다시 생성해주세요.':'')+
       '</p></div>';
@@ -1103,13 +1103,17 @@
         : '')+
       '<p class="status" id="vdstat"></p></div>';
     h+='<div class="trk"><b>⑥ 음성 후처리</b>'+
-      '<p class="hint">말 속도 1.2배속 · 피치 +0.2반음. 속도/음높이를 분리해 처리하고 WAV로 저장해요.</p>'+
+      '<p class="hint">말 속도 1.2배속 · 피치 +1반음. 속도/음높이를 분리해 처리하고 WAV로 저장해요.</p>'+
       '<button type="button" class="primary" id="mkpost" style="width:100%;margin-top:8px">1.2배속 + 피치 보정</button>'+
-      ((current.tts && current.ttsProcessedRawId===raw?.id) ?
+      ((current.tts && current.ttsProcessedRawId===raw?.id &&
+          window.ReelsMedia && current.ttsProcessedVersion===ReelsMedia.VERSION) ?
         '<p class="hint">후처리한 나레이션: '+(Number(current.ttsDuration)||0).toFixed(2)+'초</p>'+
         '<audio controls preload="none" style="width:100%;margin-top:8px" src="'+esc(blobUrl(current.tts.id))+'"></audio>'+
         '<button type="button" id="dlpost" class="ghost" style="width:100%;margin-top:8px">후처리 WAV 받기</button>'
       : '')+
+      ((current.tts && current.ttsProcessedRawId===raw?.id &&
+          (!window.ReelsMedia || current.ttsProcessedVersion!==ReelsMedia.VERSION)) ?
+        '<p class="status bad">피치 +1반음 설정이 바뀌었어요. ⑥ 음성 후처리를 다시 실행해주세요.</p>' : '')+
       '<p class="status" id="poststat"></p></div>';
     h+='<div class="trk"><b>⑦ 음성에 맞춰 자막 컷 배치</b>'+
       '<p class="hint">ElevenLabs 발화 시간을 1.2배속으로 변환해 각 자막의 시작·끝 시간을 계산해요. 균등 분할하지 않습니다.</p>'+
@@ -1271,7 +1275,7 @@
     }
   }
 
-  // ⑥ 속도를 1.2배 높이되 피치는 +0.2반음만 올린다.
+  // ⑥ 1.2배속을 유지하면서 피치는 +1반음 올린다.
   async function makeAudioProcessed(){
     var st=function(m,bad){var e=document.getElementById("poststat");
       if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
@@ -1282,7 +1286,7 @@
     }
     var rawId=current.ttsRaw.id;
     if(!window.ReelsMedia){st("음성 후처리 도구를 불러오지 못했어요. 새로고침해주세요.",true);return;}
-    st("음성 디코딩 후 1.2배속·피치 +0.2반음을 별도로 적용하는 중...");
+    st("음성 디코딩 후 1.2배속·피치 +1반음을 별도로 적용하는 중...");
     try{
       var r=await fetch(blobUrl(rawId));
       if(!r.ok)throw new Error("원본 MP3를 불러오지 못했어요.");
@@ -1291,7 +1295,7 @@
       st("후처리 WAV 파일을 저장하는 중...");
       var up=await storeUpload(newPath(current.id,"tts","wav"),processed.blob,"audio/wav");
       var old=current.tts;
-      current.tts={id:up.id,name:"나레이션_1.2배_피치0.2.wav",
+      current.tts={id:up.id,name:"나레이션_1.2배_피치1.wav",
         mime:"audio/wav",bytes:processed.blob.size};
       current.ttsProcessedRawId=rawId;
       current.ttsProcessedVersion=processed.version;
@@ -1357,7 +1361,7 @@
     try{
       var r=await fetch(blobUrl(current.tts.id));
       if(!r.ok)throw new Error("파일을 불러올 수 없어요.");
-      await downloads.save({filename:(current.folder||"reels")+"_1.2x_pitch+0.2.wav",
+      await downloads.save({filename:(current.folder||"reels")+"_1.2x_pitch+1.wav",
         data:await r.blob()});
     }catch(e){toast("WAV 다운로드에 실패했어요.");}
   }
