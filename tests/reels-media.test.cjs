@@ -95,3 +95,59 @@ test("HTML inline script parses and current 9-rule prompt and model routing stay
   assert.ok(html.includes("h+=videoSection();"));
   assert.ok(html.includes("var windows=current.cutTimeline"));
 });
+
+
+test("default fonts load for cover and subtitles without manual uploads",async()=>{
+  const html=fs.readFileSync(path.join(__dirname,"..","index.html"),"utf8");
+  const start=html.indexOf("  // ---------- 폰트 ----------");
+  const end=html.indexOf("  // ---------- 로그인 ----------",start);
+  assert.ok(start>0 && end>start);
+  const sources=[],added=[],removed=[];
+  const context={
+    uid:null,console:{warn(){}},
+    document:{fonts:{add(face){added.push(face);},delete(face){removed.push(face);}}},
+    FontFace:class {
+      constructor(family,source){this.family=family;this.source=source;sources.push(source);}
+      async load(){return this;}
+    },
+    fetch:async()=>{throw new Error("fetch should not happen for defaults without uid");},
+    blobUrl:()=>{throw new Error("Storage URL should not be used for defaults");},
+  };
+  vm.createContext(context);
+  vm.runInContext(html.slice(start,end),context,{filename:"font-section.js"});
+  await vm.runInContext("checkFonts()",context);
+  const fonts=vm.runInContext("FONTS.map(f=>[f.k,f.label,f.face,fontsReady[f.k],fontSource[f.k]])",context);
+  assert.equal(fonts.length,2);
+  assert.deepEqual(Array.from(fonts[0]),["body","온글잎 콘콘체","ReelBody",true,"default"]);
+  assert.deepEqual(Array.from(fonts[1]),["cover","학교안심 어항꾸미기 B","ReelCover",true,"default"]);
+  assert.ok(sources.some(x=>x.includes("Ownglyph_corncorn-Rg.woff2")));
+  assert.ok(sources.some(x=>x.includes("Hakgyoansim_EohangkkumigiB.woff2")));
+  assert.equal(added.length,2);
+  assert.ok(html.includes('if(k==="cover" && fontsReady.cover) return'));
+  assert.ok(html.includes('if(k==="body" && fontsReady.body) return'));
+  assert.ok(html.includes("await checkFonts();"),"App startup should load both fonts");
+});
+
+test("user-uploaded font overrides CDN default without changing the second font",async()=>{
+  const html=fs.readFileSync(path.join(__dirname,"..","index.html"),"utf8");
+  const start=html.indexOf("  // ---------- 폰트 ----------");
+  const end=html.indexOf("  // ---------- 로그인 ----------",start);
+  const loaded=[],removed=[];
+  const context={
+    uid:"mock-user",console:{warn(){}},
+    document:{fonts:{add(face){loaded.push(face);},delete(face){removed.push(face);}}},
+    FontFace:class {
+      constructor(family,source){this.family=family;this.source=source;}
+      async load(){return this;}
+    },
+    fetch:async url=>({ok:url.includes("/body.ttf")}),
+    blobUrl:path=>"https://test.supabase.co/"+path,
+  };
+  vm.createContext(context);
+  vm.runInContext(html.slice(start,end),context,{filename:"font-section.js"});
+  await vm.runInContext("checkFonts()",context);
+  assert.equal(vm.runInContext("fontSource.body",context),"custom");
+  assert.equal(vm.runInContext("fontSource.cover",context),"default");
+  assert.ok(loaded.find(f=>f.family==="ReelBody").source.includes("/body.ttf?v="));
+  assert.ok(loaded.find(f=>f.family==="ReelCover").source.includes("EohangkkumigiB.woff2"));
+});
