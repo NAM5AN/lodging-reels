@@ -877,11 +877,25 @@
       .toLocaleLowerCase("ko-KR")
       .replace(/[^\p{L}\p{N}]+/gu,"");
   }
+  // Eleven v4 accepts creative English voice directions, including comma-combined
+  // instructions such as [whispering, playful]. Korean/malformed tags must not be sent to TTS.
+  function ttsTagLanguageError(value){
+    var text=String(value||"");
+    var tags=text.match(/\[[^\[\]\r\n]{1,200}\]/g)||[];
+    var malformed=/[\[\]]/.test(text.replace(/\[[^\[\]\r\n]{1,200}\]/g,""));
+    var invalid=tags.some(function(tag){
+      return !/^\[[A-Za-z][A-Za-z0-9 ,'-]{0,119}\]$/.test(tag);
+    });
+    return malformed||invalid
+      ? "Audio Tag는 [surprised] 또는 [whispering, playful]처럼 영어로 써야 해요. ④ 태그 다시 만들기로 자동 교정해주세요."
+      : "";
+  }
+
   function tagsMatchScript(){
     var source=ttsSourceText();
     var tagged=String(current.ttsTagged||"").trim();
     if(!source || !tagged) return false;
-    if(current.ttsTagSource!==source) return false;
+    if(current.ttsTagSource!==source || ttsTagLanguageError(tagged)) return false;
     return canonicalTtsSpeech(tagged)===canonicalTtsSpeech(source);
   }
   function invalidateTtsTags(){
@@ -893,11 +907,12 @@
     var source=ttsSourceText();
     var tagged=String(current.ttsTagged||"");
     var fresh=tagsMatchScript();
+    var languageIssue=ttsTagLanguageError(tagged);
     var label=tagged ? "태그 다시 만들기" : "AI 오토태그 넣기";
     return '<div class="trk">'+
       '<div class="trkhead"><b>TTS 표현 태그</b>'+
       '<span class="trkname">ElevenLabs 공식 Auto-tag 방식</span></div>'+
-      '<p class="hint" style="margin-top:0">대본 전체 흐름을 보고 Audio Tag를 넣고, ElevenLabs처럼 문장부호·띄어쓰기·줄바꿈을 자연스럽게 정리해 한 문단으로 만듭니다. 단어와 숫자는 바꾸지 않습니다.</p>'+
+      '<p class="hint" style="margin-top:0">나레이션은 한국어 그대로 유지하고, [surprised]·[whispering, playful]처럼 영어 Audio Tag만 넣어요. 대본 전체 감정 흐름에 맞춰 필요한 곳에만 적용하고, 한국어 태그가 나오면 자동 교정해요. 단어·숫자는 바꾸지 않습니다.</p>'+
       '<button type="button" class="primary" id="mktags" style="width:100%;margin-top:8px">'+label+'</button>'+
       '<label for="f_ttsTagged" style="margin-top:12px">태그 적용 대본 <span>직접 태그 수정 가능</span></label>'+
       '<textarea id="f_ttsTagged" style="min-height:150px" placeholder="먼저 AI 오토태그를 넣어주세요">'+esc(tagged)+'</textarea>'+
@@ -905,7 +920,7 @@
         '<button type="button" class="ghost" id="cleartags" style="flex:1">태그 지우기</button>'+
       '</div>'+
       '<p class="status'+(tagged&&!fresh?' bad':'')+'" id="tagstat">'+
-        (tagged ? (fresh ? "단어·숫자 보존 확인됨. 문장부호/띄어쓰기 정리 허용 · TTS 생성 준비됐어요." : "단어나 숫자가 바뀌었어요. 태그를 다시 만들어주세요.") : "")+
+        (tagged ? (languageIssue || (fresh ? "영어 Audio Tag · 원문 단어·숫자 보존 확인됨. ⑤ TTS 생성 준비됐어요." : "단어나 숫자가 바뀌었거나 대본이 수정됐어요. 태그를 다시 만들어주세요.")) : "")+
       '</p>'+
     '</div>';
   }
@@ -943,6 +958,7 @@
           :code==="rate_limited" ? "AI 요청 제한에 걸렸어요. 잠시 후 다시 시도해주세요."
           :code==="unauthorized" ? "로그인이 만료됐어요. 다시 로그인해주세요."
           :code==="tag_integrity_failed" ? "AI가 원문 단어나 숫자를 바꿔서 오토태그를 적용하지 않았어요. 다시 시도해주세요."
+          :code==="tag_language_failed" ? "한국어 Audio Tag의 자동 영어 교정에 실패했어요. 다시 시도해주세요."
           :code==="too_long" ? "대본이 너무 길어요. 5,000자 이내로 줄여주세요."
           :"오토태그 생성에 실패했어요"+(code?" ("+code+")":"")+". 다시 시도해주세요.";
         st(message,true);
@@ -950,6 +966,8 @@
       }
       var tagged=String(result&&result.text||"").trim();
       if(!tagged){ st("오토태그 결과가 비어 있어요. 다시 시도해주세요.",true); return; }
+      var issue=ttsTagLanguageError(tagged);
+      if(issue){ st(issue,true); return; }
       if(canonicalTtsSpeech(tagged)!==canonicalTtsSpeech(source)){
         st("원문 단어나 숫자가 변경되어 오토태그를 적용하지 않았어요.",true);
         return;
@@ -967,7 +985,7 @@
       if(tagStat){
         tagStat.className="status"+(saved?"":" bad");
         tagStat.textContent=saved
-          ? "오토태그를 생성하고 저장했어요. 원문 단어·숫자 보존 확인 완료. ⑤ TTS를 생성할 수 있어요."
+          ? "영어 Audio Tag를 적용하고 저장했어요. 한국어 원문·숫자 보존 확인 완료. ⑤ TTS를 생성할 수 있어요."
           : "오토태그를 생성했지만 프로젝트 저장에 실패했어요. 저장 상태를 확인해주세요.";
       }
     }catch(e){
@@ -1177,6 +1195,9 @@
     var source=ttsSourceText();
     if(!source){ st("대본을 먼저 만들어주세요.",true); return; }
     var tagged=String(current.ttsTagged||"").trim();
+    if(tagged && ttsTagLanguageError(tagged)){
+      st(ttsTagLanguageError(tagged),true); return;
+    }
     if(!tagged || !tagsMatchScript()){
       st("먼저 ④ 오토태그를 완료해주세요.",true); return;
     }
@@ -1210,6 +1231,7 @@
         ? "음성 설정이 올바르지 않아요. 값을 확인해주세요."
         :code==="no_key" ? "ElevenLabs API 키를 Supabase Secrets에 넣어주세요."
         :code==="no_voice" ? "ElevenLabs 목소리 ID를 설정해주세요."
+        :code==="invalid_audio_tags" ? "한국어 Audio Tag가 있어요. ④ 태그 다시 만들기로 영어 태그를 적용해주세요."
         :code==="rate_limited" ? "TTS 요청 제한에 걸렸어요. 잠시 뒤 시도해주세요."
         :"음성 생성 실패: "+msg.slice(0,170),true);
       return;
@@ -2522,14 +2544,15 @@
     if(tagArea){
       tagArea.addEventListener("input",function(){
         current.ttsTagged=tagArea.value;
-        var ok=canonicalTtsSpeech(tagArea.value)===canonicalTtsSpeech(ttsSourceText());
+        var tagIssue=ttsTagLanguageError(tagArea.value);
+        var ok=!tagIssue && canonicalTtsSpeech(tagArea.value)===canonicalTtsSpeech(ttsSourceText());
         if(ok) current.ttsTagSource=ttsSourceText();
         else current.ttsTagSource="";
         var se=document.getElementById("tagstat");
         if(se){
           se.className="status"+(ok?"":" bad");
-          se.textContent=ok ? "원문 보존 확인됨. TTS 생성 준비됐어요."
-                            : "단어나 숫자가 바뀌었어요. 태그만 수정하거나 다시 만들어주세요.";
+          se.textContent=tagIssue || (ok ? "영어 태그·원문 보존 확인됨. TTS 생성 준비됐어요."
+                            : "단어나 숫자가 바뀌었어요. 태그만 수정하거나 다시 만들어주세요.");
         }
         autosave();
       });
