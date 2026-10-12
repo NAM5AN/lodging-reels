@@ -63,7 +63,7 @@ test("can encode output PCM as a valid WAV blob",()=>{
   assert.equal(result.size,44+6);
 });
 
-test("HTML inline script parses and all 8 authored script rules are still present",()=>{
+test("HTML inline script parses and current 9-rule prompt and model routing stay intact",()=>{
   const repoRoot=path.join(__dirname,"..");
   const html=fs.readFileSync(path.join(repoRoot,"index.html"),"utf8");
   const m=html.match(/<script>\s*([\s\S]*?)<\/script>/);
@@ -73,11 +73,21 @@ test("HTML inline script parses and all 8 authored script rules are still presen
   const end=html.indexOf("  // ---------- 검사 ----------",start);
   assert.ok(start>=0 && end>start,"User script prompt and checks must exist");
   const p=html.slice(start,end);
-  assert.ok(p.includes("# 지켜야 할 8가지 구조"));
+  assert.ok(p.includes("# 지켜야 할 9가지 구조"));
   assert.ok(p.includes("1. 첫 두 줄"));
   assert.ok(p.includes("2. 시설"));
   assert.ok(p.includes("3. 줄에서 문장"));
   assert.ok(p.includes("8. 마지막"));
+  assert.ok(p.includes("9. 화자는 숙소 편이 아니라 시청자 편에 서세요."));
+  assert.ok(html.includes("function sideWarnings(lines)"));
+  assert.ok(html.includes("var w=sideWarnings(lines).concat(sceneWarnings(lines)).concat(scriptWarnings(lines));"));
+  // OCR does not set a purpose; script creation/repair/extension all use Opus 5.5.
+  assert.ok(html.includes('applyFields(await askJSON(fillPrompt('));
+  assert.ok(html.includes('}, "script");'));
+  assert.ok(html.includes('null, "script_repair"'));
+  assert.ok(html.includes('null, "script_extend"'));
+  assert.ok(html.includes('if(purpose==="script_repair")request.repair_indices=repairIndices||[];'));
+  assert.ok(html.includes("function ttsSettingsSection()"));
   assert.ok(p.includes("제약") && p.includes("유료"),"Facts and paid constraints stay distinct");
   assert.ok(html.includes("await askJSON(scriptPrompt()"));
   assert.ok(!html.includes("await askJSON(shortPrompt()"),"Never downgrade to abbreviated prompt");
