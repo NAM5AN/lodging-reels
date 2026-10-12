@@ -85,7 +85,11 @@ function grab(sig){
 
 function box(current){
   const sandbox={current, esc:(v)=>String(v??"")};
-  vm.runInNewContext([grab("srcId(p){"),grab("editPromptText(proj, note){")].join("\n"),sandbox);
+  vm.runInNewContext([
+    grab("srcId(p){"), grab("peekSpec(proj, pid){"), grab("specOf(proj, pid){"),
+    grab("editHead(proj, refCount){"), grab("editPromptText(proj, pid){"),
+    grab("editRequest(proj, pid){"), grab("editPending(proj){"),
+  ].join("\n"),sandbox);
   return sandbox;
 }
 
@@ -95,18 +99,62 @@ test("srcId: an edited photo is used downstream, otherwise the original",()=>{
   assert.equal(b.srcId({id:"b.jpg"}),"b.jpg");
 });
 
-test("prompt: keeps the real space by default and tells the model which image is the base",()=>{
+test("each photo carries its own prompt and its own references",()=>{
   const b=box({});
-  const t=b.editPromptText({editPrompt:"따뜻한 조명",refs:[{id:1},{id:2}]},"창밖은 노을");
-  assert.match(t,/^Image 1 is the base photo to edit\. Images 2-3 are references only\./);
-  assert.match(t,/do not add rooms or facilities/);
-  assert.match(t,/9:16/);
-  assert.match(t,/\n\n따뜻한 조명\n\nFor this photo only: 창밖은 노을$/);
+  const proj={
+    photos:[{id:"p1"},{id:"p2"},{id:"p3"}],
+    editSpecs:{
+      p1:{prompt:"창밖을 노을로",refs:[{id:"r1"},{id:"r2"}]},
+      p2:{prompt:"침구를 흰색으로",refs:[]},
+      p3:{prompt:"   ",refs:[{id:"r9"}]},
+    },
+  };
+  const a=b.editRequest(proj,"p1");
+  assert.equal(a.base,"p1");
+  assert.deepEqual([...a.refs],["r1","r2"],"only p1's refs");
+  assert.match(a.prompt,/Images 2-3 are references only\./);
+  assert.match(a.prompt,/\n\n창밖을 노을로$/);
+  assert.equal(a.quality,"high");
 
-  const off=b.editPromptText({editPrompt:"x",refs:[],editKeepReal:false},"");
+  const c=b.editRequest(proj,"p2");
+  assert.deepEqual([...c.refs],[],"p2 gets none of p1's refs");
+  assert.doesNotMatch(c.prompt,/reference/,"no reference sentence without refs");
+  assert.match(c.prompt,/\n\n침구를 흰색으로$/);
+
+  assert.equal(b.editRequest(proj,"p3"),null,"blank prompt → nothing is sent");
+  assert.deepEqual([...b.editPending(proj)],["p1","p2"],"bulk run skips blank prompts");
+
+  proj.edits={p1:{id:"e1"}};
+  assert.deepEqual([...b.editPending(proj)],["p2"],"bulk run skips photos that already have a result");
+});
+
+test("one reference reads as singular; keep-real sentence can be turned off",()=>{
+  const b=box({});
+  const one=b.editPromptText({editSpecs:{p:{prompt:"x",refs:[{id:"r"}]}}},"p");
+  assert.match(one,/Image 2 is a reference only\./);
+  assert.match(one,/do not add rooms or facilities/);
+  const off=b.editPromptText({editKeepReal:false,editSpecs:{p:{prompt:"x",refs:[]}}},"p");
   assert.doesNotMatch(off,/real accommodation/);
-  assert.doesNotMatch(off,/references only/,"no refs sentence without refs");
-  assert.match(off,/\n\nx$/);
+  assert.match(off,/^Image 1 is the base photo to edit\. Output one vertical 9:16 frame/);
+});
+
+test("text typed under the old shared-prompt layout is carried into the photo's own prompt",()=>{
+  const b=box({});
+  const proj={editPrompt:"따뜻한 조명",editNotes:{p1:"창밖은 노을"},photos:[{id:"p1"},{id:"p2"}]};
+  assert.equal(b.peekSpec(proj,"p1").prompt,"따뜻한 조명\n창밖은 노을");
+  assert.equal(b.peekSpec(proj,"p2").prompt,"따뜻한 조명");
+  assert.equal(proj.editSpecs,undefined,"reading does not write");
+  b.specOf(proj,"p1").prompt="새로 씀";
+  assert.equal(b.peekSpec(proj,"p1").prompt,"새로 씀");
+});
+
+test("screen has no shared prompt box or shared reference picker",()=>{
+  assert.ok(!html.includes('id="f_editPrompt"'),"no shared prompt textarea");
+  assert.ok(!html.includes('imageGrid("ref")'),"no shared reference grid");
+  assert.ok(html.includes('data-eprompt="'),"per-photo prompt");
+  assert.ok(html.includes('data-eref="'),"per-photo reference input");
+  assert.ok(html.includes("querySelectorAll('input[type=file][data-kind]')"),
+    "generic uploader ignores per-photo reference inputs");
 });
 
 test("steps are renumbered: ⑨ 가공 → ⑩ 컷 배치 → ⑪ 영상",()=>{

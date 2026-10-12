@@ -138,6 +138,15 @@
   .earrow{color:var(--mute); font-size:14px}
   .eside{flex:1 1 180px; min-width:0}
   .ebtns{display:flex; gap:6px; margin-top:6px}
+  .eside textarea{min-height:64px; font-size:14.5px}
+  .erefs{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; align-items:center}
+  .eref{position:relative; width:44px; height:44px; border-radius:6px; overflow:hidden;
+    border:1px solid var(--line); background:var(--field)}
+  .eref img{width:100%; height:100%; object-fit:cover; display:block}
+  .eref button{position:absolute; right:0; top:0; width:18px; height:18px; padding:0; border:0;
+    border-radius:0 0 0 6px; background:rgba(0,0,0,.72); color:#fff; font-size:12px; line-height:18px}
+  .eadd{height:44px; padding:0 10px; font-size:12.5px; font-weight:600; border:1.5px dashed var(--line);
+    border-radius:6px; background:transparent}
   .ebtns button{flex:1}
   label.chk{display:flex; align-items:center; gap:8px; font-weight:500}
   label.chk input{width:auto; margin:0}
@@ -326,6 +335,7 @@
         v.refs=(v.refs||[]).map(function(x){return Object.assign({},x)});
         v.edits=Object.assign({}, v.edits||{});
         v.editNotes=Object.assign({}, v.editNotes||{});
+        v.editSpecs=JSON.parse(JSON.stringify(v.editSpecs||{}));
         return v;
       });
       local=false;
@@ -352,6 +362,9 @@
   async function removeProject(p){
     var ids=(p.photos||[]).concat(p.infos||[]).concat(p.refs||[]).map(function(x){return x.id});
     Object.keys(p.edits||{}).forEach(function(k){ var e=p.edits[k]; if(e && e.id) ids.push(e.id); });
+    Object.keys(p.editSpecs||{}).forEach(function(k){
+      ((p.editSpecs[k]||{}).refs||[]).forEach(function(r){ if(r && r.id) ids.push(r.id); });
+    });
     [p.tts, p.bgm].forEach(function(a){ if(a && a.id) ids.push(a.id); });
     for(var i=0;i<ids.length;i++){ try{ await storeDelete(ids[i]); }catch(e){} }
     try{
@@ -438,11 +451,6 @@
     if(!uid){ toast("로그인이 필요해요"); return; }
     var key = keyOf(kind);
     current[key] = current[key]||[];
-    if(kind==="ref"){
-      var room=EDIT.maxRefs-current[key].length;
-      if(room<=0){ toast("레퍼런스는 "+EDIT.maxRefs+"장까지예요"); return; }
-      if(files.length>room){ toast("레퍼런스는 "+EDIT.maxRefs+"장까지라 "+room+"장만 올려요"); files=files.slice(0,room); }
-    }
     var done=0, fail=0, fresh=[];
 
     for(var i=0;i<files.length;i++){
@@ -472,13 +480,16 @@
     var it = current[key][idx];
     current[key].splice(idx,1);
     var ed = (kind==="photo" && it && current.edits) ? current.edits[it.id] : null;
+    var sp = (kind==="photo" && it && current.editSpecs) ? current.editSpecs[it.id] : null;
     if(kind==="photo" && it){
       if(current.edits) delete current.edits[it.id];
+      if(current.editSpecs) delete current.editSpecs[it.id];
       if(current.editNotes) delete current.editNotes[it.id];
     }
     await persist(current);
     if(it){ try{ await storeDelete(it.id); }catch(e){} }
     if(ed && ed.id){ try{ await storeDelete(ed.id); }catch(e){} }
+    if(sp && sp.refs){ for(var q=0;q<sp.refs.length;q++){ try{ await storeDelete(sp.refs[q].id); }catch(e){} } }
     renderEdit(current);
   }
 
@@ -2479,9 +2490,13 @@
 
   // ---------- 편집 ----------
   // ---------- ⑨ 이미지 가공 ----------
-  // ⑧ 사진 한 장 한 장을 기본으로, 추가 레퍼런스와 프롬프트로 GPT Image 2.5 Sunburst 가
-  // 1080x1920 세로 이미지를 만든다. 결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에서 결과로 바뀐다.
-  // 결과를 지우면 원본으로 돌아간다. 원본은 건드리지 않는다.
+  // ⑧ 사진 한 장 한 장에 그 사진만의 프롬프트와 레퍼런스를 붙여 GPT Image 2.5 Sunburst 로
+  // 1080x1920 세로 이미지를 만든다. 공통 프롬프트나 공통 레퍼런스는 없다.
+  // 결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에서 결과로 바뀐다. 결과를 지우면 원본으로 돌아간다.
+  //
+  // 저장 구조
+  //   current.editSpecs[사진id] = { prompt:"...", refs:[{id,w,h,size}] }   ← 사진별 입력
+  //   current.edits[사진id]     = { id, w, h, ... }                        ← 사진별 결과
   var EDIT = {
     w:1080, h:1920, maxRefs:15,
     qualities:[["medium","보통 · 빠름"],["high","높음 · 기본"],["xhigh","아주 높음 · 느림"],["max","최고 · 가장 느림"]]
@@ -2494,61 +2509,102 @@
     return (e && e.id) || (p && p.id);
   }
 
-  // 모델에 보내는 최종 프롬프트. 화면에도 그대로 보여준다.
-  // 'Image 1' 은 Vercel 함수가 images 배열 맨 앞에 넣는 기본 사진이다.
-  function editPromptText(proj, note){
-    proj = proj || current;
-    var refs=(proj.refs||[]).length;
+  // 읽기 전용. 아직 입력이 없으면 빈 값을 돌려준다(프로젝트를 건드리지 않는다).
+  // 공통 프롬프트 시절(editPrompt + editNotes)에 적어 둔 글이 있으면 그 사진의 프롬프트로 이어 받는다.
+  function peekSpec(proj, pid){
+    var sp=(proj.editSpecs||{})[pid];
+    if(sp) return {prompt:sp.prompt||"", refs:sp.refs||[]};
+    var legacy=[(proj.editPrompt||"").trim(), ((proj.editNotes||{})[pid]||"").trim()].filter(Boolean).join("\n");
+    return {prompt:legacy, refs:[]};
+  }
+  // 쓰기용. 없으면 만들어서 프로젝트에 붙인다.
+  function specOf(proj, pid){
+    proj.editSpecs=proj.editSpecs||{};
+    if(!proj.editSpecs[pid]){
+      var seed=peekSpec(proj, pid);
+      proj.editSpecs[pid]={prompt:seed.prompt, refs:seed.refs.slice()};
+    }
+    return proj.editSpecs[pid];
+  }
+
+  // 'Image 1' 은 Vercel 함수가 images 배열 맨 앞에 넣는 기본 사진이다. 그 뒤가 이 사진의 레퍼런스다.
+  function editHead(proj, refCount){
     var head="Image 1 is the base photo to edit.";
-    if(refs) head+=" Images 2"+(refs>1?"-"+(refs+1):"")+" are references only.";
+    if(refCount===1) head+=" Image 2 is a reference only.";
+    else if(refCount>1) head+=" Images 2-"+(refCount+1)+" are references only.";
     if(proj.editKeepReal!==false){
       // 숙소 사진을 실제와 다르게 바꾸면 DM 받은 사람이 숙소를 보고 바로 돌아선다.
       head+=" Image 1 is a real accommodation: keep its actual space, layout, furniture, windows and view;"+
             " do not add rooms or facilities that are not in it.";
-      if(refs) head+=" Use the references for style, mood, lighting or props, not for the place itself.";
+      if(refCount) head+=" Use the references for style, mood, lighting or props, not for the place itself.";
     }
-    head+=" Output one vertical 9:16 frame for a short-form video.";
-    var body=(proj.editPrompt||"").trim();
-    var extra=(note||"").trim();
-    return head+"\n\n"+body+(extra ? "\n\nFor this photo only: "+extra : "");
+    return head+" Output one vertical 9:16 frame for a short-form video.";
+  }
+
+  // 모델에 보내는 최종 프롬프트.
+  function editPromptText(proj, pid){
+    var sp=peekSpec(proj, pid);
+    return editHead(proj, sp.refs.length)+"\n\n"+sp.prompt.trim();
+  }
+
+  // 함수로 보낼 요청 본문. 프롬프트가 없으면 만들지 않는다.
+  function editRequest(proj, pid){
+    var sp=peekSpec(proj, pid);
+    if(!sp.prompt.trim()) return null;
+    return {
+      base: pid,
+      refs: sp.refs.map(function(r){ return r.id; }),
+      prompt: editPromptText(proj, pid),
+      quality: proj.editQuality||"high"
+    };
+  }
+
+  // '전부 만들기' 대상: 프롬프트를 적었고 아직 결과가 없는 사진.
+  function editPending(proj){
+    var ed=proj.edits||{};
+    return (proj.photos||[]).filter(function(p){
+      return !ed[p.id] && peekSpec(proj, p.id).prompt.trim();
+    }).map(function(p){ return p.id; });
+  }
+
+  function editAllLabel(proj){
+    var n=editPending(proj).length;
+    if(n) return '프롬프트 적은 사진 전부 만들기 ('+n+'장)';
+    var any=(proj.photos||[]).some(function(p){ return peekSpec(proj, p.id).prompt.trim(); });
+    return any ? '프롬프트 적은 사진은 모두 만들었어요' : '프롬프트를 적은 사진이 없어요';
   }
 
   function editSection(){
-    var ph=current.photos||[], ed=current.edits||{}, notes=current.editNotes||{};
+    var ph=current.photos||[], ed=current.edits||{};
     var h='<h2>⑨ 이미지 가공</h2><div class="card">';
-    h+='<p class="hint" style="margin:0 0 10px">⑧ 사진 한 장 한 장을 기본으로, 아래 레퍼런스와 프롬프트에 맞춰 '+
-       'GPT Image 2.5 Sunburst 가 1080×1920 세로 이미지를 만들어요. 결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에 결과로 들어가요. '+
-       '결과를 지우면 원본으로 돌아가요.</p>';
+    h+='<p class="hint" style="margin:0 0 10px">사진마다 프롬프트와 레퍼런스를 따로 넣어 '+
+       'GPT Image 2.5 Sunburst 로 1080×1920 세로 이미지를 만들어요. 프롬프트를 적은 사진만 만들어져요. '+
+       '결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에 결과로 들어가고, 결과를 지우면 원본으로 돌아가요.</p>';
     if(!ph.length) return h+'<p class="hint">⑧ 사진을 먼저 올려주세요.</p></div>';
 
-    h+='<label style="margin-top:0">추가 레퍼런스 <span>선택 · 최대 '+EDIT.maxRefs+'장 · 모든 사진에 같이 들어가요</span></label>';
-    h+=imageGrid("ref");
-
-    h+='<label for="f_editPrompt">프롬프트 <span>모든 사진에 공통</span></label>'+
-       '<textarea id="f_editPrompt" style="min-height:110px" placeholder="예: 창밖을 해 질 녘 하늘로 바꾸고 실내 조명은 따뜻하게. 사람은 넣지 마세요.">'+
-       esc(current.editPrompt||"")+'</textarea>';
-    h+='<label class="chk"><input type="checkbox" id="f_editKeepReal"'+(current.editKeepReal===false?'':' checked')+
+    h+='<label class="chk" style="margin-top:0"><input type="checkbox" id="f_editKeepReal"'+(current.editKeepReal===false?'':' checked')+
        '> 실제 공간 유지 문장 자동 추가</label>';
-    h+='<p class="hint">켜두면 "1번 사진은 실제 숙소니 공간·가구·창·전망은 그대로, 없는 시설은 넣지 말 것" 이 앞에 붙어요. '+
+    h+='<p class="hint">켜두면 각 프롬프트 앞에 "1번 사진은 실제 숙소니 공간·가구·창·전망은 그대로, 없는 시설은 넣지 말 것" 이 붙어요. '+
        '실제와 다른 사진이면 DM 받은 사람이 숙소를 보고 돌아서요.</p>';
-    h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">모델에 실제로 가는 문장 보기</summary>'+
-       '<pre id="editpreview" style="white-space:pre-wrap;font-size:12px;margin:8px 0 0">'+esc(editPromptText(current,""))+'</pre></details>';
+    h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">프롬프트 앞에 붙는 문장 보기</summary>'+
+       '<pre id="editpreview" style="white-space:pre-wrap;font-size:12px;margin:8px 0 0">'+
+       esc(editHead(current, 2)+"\n\n(사진별 프롬프트)\n\n레퍼런스 수에 따라 'Images 2-3' 부분이 바뀌어요.")+'</pre></details>';
 
-    h+='<label for="f_editQuality">품질</label><select id="f_editQuality">'+
+    h+='<label for="f_editQuality">품질 <span>모든 사진 공통</span></label><select id="f_editQuality">'+
        EDIT.qualities.map(function(q){
          return '<option value="'+q[0]+'"'+(q[0]===(current.editQuality||"high")?' selected':'')+'>'+esc(q[1])+'</option>';
        }).join("")+'</select>';
     h+='<p class="hint">한 장씩 차례로 만들어서 시간이 걸려요. 품질을 올릴수록 느리고 비싸요.</p>';
 
-    var missing=ph.filter(function(p){ return !ed[p.id]; }).length;
+    var pend=editPending(current).length;
     var dis=editBusy?' disabled':'';
-    h+='<button type="button" id="editall" class="primary" style="width:100%;margin-top:12px"'+(missing&&!editBusy?'':' disabled')+'>'+
-       (missing ? '결과 없는 사진 전부 만들기 ('+missing+'장)' : '모든 사진에 결과가 있어요')+'</button>';
+    h+='<button type="button" id="editall" class="primary" style="width:100%;margin-top:12px"'+(pend&&!editBusy?'':' disabled')+'>'+
+       editAllLabel(current)+'</button>';
     h+='<p class="status" id="editstat"></p>';
 
     h+='<div>';
     ph.forEach(function(p,i){
-      var e=ed[p.id];
+      var e=ed[p.id], sp=peekSpec(current, p.id);
       h+='<div class="erow">'+
          '<div class="epair">'+
            '<div class="eimg"><img src="'+blobUrl(p.id)+'" alt=""><i>'+(i+1)+'</i></div>'+
@@ -2556,7 +2612,17 @@
            '<div class="eimg'+(e?'':' empty')+'">'+(e?'<img src="'+blobUrl(e.id)+'" alt="">':'<span>아직 없음</span>')+'</div>'+
          '</div>'+
          '<div class="eside">'+
-           '<input type="text" data-enote="'+esc(p.id)+'" placeholder="이 사진만 추가 지시 (선택)" value="'+esc(notes[p.id]||"")+'">'+
+           '<textarea data-eprompt="'+esc(p.id)+'" placeholder="'+(i+1)+'번 사진을 어떻게 바꿀지 적어주세요">'+esc(sp.prompt)+'</textarea>'+
+           '<div class="erefs">';
+      sp.refs.forEach(function(r,j){
+        h+='<div class="eref"><img src="'+blobUrl(r.id)+'" alt="">'+
+           '<button type="button" data-erefdel="'+i+':'+j+'" aria-label="레퍼런스 지우기"'+dis+'>×</button></div>';
+      });
+      if(sp.refs.length<EDIT.maxRefs){
+        h+='<button type="button" class="eadd" data-pick="eref_'+i+'"'+dis+'>+ 레퍼런스'+(sp.refs.length?' ('+sp.refs.length+')':'')+'</button>'+
+           '<input class="sr" type="file" accept="image/*" multiple id="file_eref_'+i+'" data-eref="'+i+'">';
+      }
+      h+=  '</div>'+
            '<div class="ebtns">'+
              '<button type="button" data-edit="'+i+'"'+dis+'>'+(e?'다시 만들기':'만들기')+'</button>'+
              (e?'<button type="button" class="ghost" data-unedit="'+i+'"'+dis+'>결과 지우기</button>':'')+
@@ -2566,6 +2632,15 @@
     });
     h+='</div></div>';
     return h;
+  }
+
+  // 프롬프트를 적는 동안 화면을 다시 그리면 커서가 날아간다. 버튼만 고친다.
+  function refreshEditAll(){
+    var b=document.getElementById("editall");
+    if(!b) return;
+    var n=editPending(current).length;
+    b.textContent=editAllLabel(current);
+    b.disabled=editBusy || !n;
   }
 
   function b64ToBlob(b64, mime){
@@ -2596,16 +2671,10 @@
   }
 
   async function editOne(proj, photoId){
-    var ph=(proj.photos||[]).find(function(x){ return x.id===photoId; });
-    if(!ph) throw new Error("사진이 없어요");
-    if(!(proj.editPrompt||"").trim()) throw new Error("프롬프트를 먼저 적어주세요");
-    var note=(proj.editNotes||{})[photoId]||"";
-    var body={
-      base: ph.id,
-      refs: (proj.refs||[]).map(function(r){ return r.id; }),
-      prompt: editPromptText(proj, note),
-      quality: proj.editQuality||"high"
-    };
+    var idx=(proj.photos||[]).findIndex(function(x){ return x.id===photoId; });
+    if(idx<0) throw new Error("사진이 없어요");
+    var body=editRequest(proj, photoId);
+    if(!body) throw new Error((idx+1)+"번 사진 프롬프트가 비었어요");
     var r=await api(FN.image,{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
     var t=await r.text(), j=null;
     try{ j=JSON.parse(t); }catch(e){}
@@ -2621,7 +2690,7 @@
     var old=proj.edits[photoId];
     proj.edits[photoId]={
       id:up.id, w:EDIT.w, h:EDIT.h, size:up.sizeBytes, srcW:fit.srcW, srcH:fit.srcH,
-      quality:j.quality||body.quality, at:Date.now(),
+      quality:j.quality||body.quality, refs:body.refs.length, at:Date.now(),
       note: fit.note || (j.minimal ? "크기·품질 옵션 없이 만들어졌어요" : "")
     };
     await persist(proj);
@@ -2635,9 +2704,8 @@
 
   // 사진 여러 장을 차례로. 한 장이 실패해도 나머지는 계속 만든다.
   async function runEdits(photoIds){
-    if(editBusy) return;
+    if(editBusy || !photoIds.length) return;
     var proj=current;
-    if(!(proj.editPrompt||"").trim()){ editStatus("프롬프트를 먼저 적어주세요.", true); return; }
     flushSave();
     editBusy=true;
     var done=0, fail=0, lastErr="", t0=0, label="";
@@ -2673,6 +2741,44 @@
     delete current.edits[photoId];
     await persist(current);
     try{ await storeDelete(e.id); }catch(x){}
+    renderEdit(current);
+  }
+
+  // 이 사진의 레퍼런스. 다른 사진과 공유하지 않는다.
+  async function addRefs(files, idx){
+    if(!uid){ toast("로그인이 필요해요"); return; }
+    var proj=current, ph=(proj.photos||[])[idx];
+    if(!ph) return;
+    var sp=specOf(proj, ph.id);
+    var room=EDIT.maxRefs-sp.refs.length;
+    if(room<=0){ toast("레퍼런스는 사진당 "+EDIT.maxRefs+"장까지예요"); return; }
+    if(files.length>room){ toast("사진당 "+EDIT.maxRefs+"장까지라 "+room+"장만 올려요"); files=files.slice(0,room); }
+    var done=0, fail=0;
+    for(var k=0;k<files.length;k++){
+      toast((idx+1)+"번 사진 레퍼런스 올리는 중 "+(k+1)+"/"+files.length);
+      try{
+        var r=await shrink(files[k], "ref");
+        var up=await storeUpload(newPath(proj.id, "ref", "jpg"), r.blob, "image/jpeg");
+        sp.refs.push({id:up.id, w:r.w, h:r.h, size:up.sizeBytes});
+        done++;
+      }catch(e){
+        fail++;
+        if(/quota|exceed|413/i.test(String(e&&e.message))){ toast("저장 공간이 꽉 찼어요"); break; }
+      }
+    }
+    await persist(proj);
+    if(current===proj) renderEdit(proj);
+    toast(fail ? (done+"장 올렸고 "+fail+"장 실패했어요") : (done+"장 올렸어요"));
+  }
+
+  async function dropRef(idx, j){
+    var ph=(current.photos||[])[idx];
+    if(!ph) return;
+    var sp=specOf(current, ph.id), r=sp.refs[j];
+    if(!r) return;
+    sp.refs.splice(j,1);
+    await persist(current);
+    try{ await storeDelete(r.id); }catch(e){}
     renderEdit(current);
   }
 
@@ -2763,7 +2869,7 @@
         if(inp) inp.click();
       });
     });
-    Array.prototype.forEach.call(view.querySelectorAll('input[type=file]'),function(inp){
+    Array.prototype.forEach.call(view.querySelectorAll('input[type=file][data-kind]'),function(inp){
       inp.addEventListener("change",function(){
         if(inp.files && inp.files.length){
           view.classList.add("busy");
@@ -2950,33 +3056,50 @@
     Array.prototype.forEach.call(view.querySelectorAll(".cpick"),function(b){
       b.addEventListener("click",function(){ openPicker(b, +b.dataset.cut); });
     });
-    // ⑨ 이미지 가공
-    var ep=document.getElementById("f_editPrompt");
-    var refreshPreview=function(){
-      var pv=document.getElementById("editpreview");
-      if(pv) pv.textContent=editPromptText(current,"");
-    };
-    if(ep){
-      ep.addEventListener("input",function(){ current.editPrompt=ep.value; refreshPreview(); autosave(); });
-      ep.addEventListener("blur",function(){ current.editPrompt=ep.value; flushSave(); });
-    }
+    // ⑨ 이미지 가공 — 사진별 프롬프트·레퍼런스
     var ek=document.getElementById("f_editKeepReal");
-    if(ek) ek.addEventListener("change",function(){ current.editKeepReal=ek.checked; refreshPreview(); flushSave(); });
+    if(ek) ek.addEventListener("change",function(){
+      current.editKeepReal=ek.checked;
+      var pv=document.getElementById("editpreview");
+      if(pv) pv.textContent=editHead(current,2)+"\n\n(사진별 프롬프트)\n\n레퍼런스 수에 따라 'Images 2-3' 부분이 바뀌어요.";
+      flushSave();
+    });
     var eq=document.getElementById("f_editQuality");
     if(eq) eq.addEventListener("change",function(){ current.editQuality=eq.value; flushSave(); });
-    Array.prototype.forEach.call(view.querySelectorAll("[data-enote]"),function(inp){
-      inp.addEventListener("input",function(){
-        current.editNotes=current.editNotes||{};
-        var v=inp.value.trim();
-        if(v) current.editNotes[inp.dataset.enote]=inp.value; else delete current.editNotes[inp.dataset.enote];
+    Array.prototype.forEach.call(view.querySelectorAll("[data-eprompt]"),function(ta){
+      ta.addEventListener("input",function(){
+        specOf(current, ta.dataset.eprompt).prompt=ta.value;
+        refreshEditAll();
         autosave();
       });
-      inp.addEventListener("blur",function(){ flushSave(); });
+      ta.addEventListener("blur",function(){ flushSave(); });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("input[data-eref]"),function(inp){
+      inp.addEventListener("change",function(){
+        if(inp.files && inp.files.length){
+          view.classList.add("busy");
+          addRefs(Array.prototype.slice.call(inp.files), +inp.dataset.eref)
+            .finally(function(){ view.classList.remove("busy"); });
+        }
+      });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("[data-erefdel]"),function(b){
+      b.addEventListener("click",function(){
+        var a=b.dataset.erefdel.split(":");
+        if(confirm("이 레퍼런스를 지울까요?")) dropRef(+a[0], +a[1]);
+      });
     });
     Array.prototype.forEach.call(view.querySelectorAll("[data-edit]"),function(b){
       b.addEventListener("click",function(){
-        var p=(current.photos||[])[+b.dataset.edit];
-        if(p) runEdits([p.id]);
+        var i=+b.dataset.edit, p=(current.photos||[])[i];
+        if(!p) return;
+        if(!peekSpec(current, p.id).prompt.trim()){
+          editStatus((i+1)+"번 사진 프롬프트를 먼저 적어주세요.", true);
+          var ta=view.querySelector('[data-eprompt="'+p.id.replace(/"/g,'\\"')+'"]');
+          if(ta) ta.focus();
+          return;
+        }
+        runEdits([p.id]);
       });
     });
     Array.prototype.forEach.call(view.querySelectorAll("[data-unedit]"),function(b){
@@ -2987,8 +3110,7 @@
     });
     var ea=document.getElementById("editall");
     if(ea) ea.addEventListener("click",function(){
-      var ed=current.edits||{};
-      var ids=(current.photos||[]).filter(function(p){ return !ed[p.id]; }).map(function(p){ return p.id; });
+      var ids=editPending(current);
       if(!ids.length) return;
       if(!confirm(ids.length+"장을 한 장씩 차례로 만들어요. 진행할까요?")) return;
       runEdits(ids);
