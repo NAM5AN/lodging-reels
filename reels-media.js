@@ -6,8 +6,8 @@
 (function (root) {
   "use strict";
   var SPEED = 1.2;
-  var PITCH_SEMITONES = 0.2;
-  var DSP_VERSION = "soundtouch-2.1.1-speed1.2-pitch0.2";
+  var PITCH_SEMITONES = 1;
+  var DSP_VERSION = "soundtouch-2.1.1-speed1.2-pitch1";
 
   function speechLetters(text) {
     return String(text || "")
