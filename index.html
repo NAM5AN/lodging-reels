@@ -109,6 +109,11 @@
   .trkline input[type=checkbox]{width:18px; height:18px; margin:0}
   .trkval{flex:0 0 32px; text-align:right; color:var(--mute);
     font-size:12.5px; font-variant-numeric:tabular-nums}
+  .tts-setting-label{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+  .tts-setting-label output{font-variant-numeric:tabular-nums;font-weight:700;color:var(--accent)}
+  .tts-range{width:100%;margin:2px 0 0;accent-color:var(--accent)}
+  .tts-range-hint{display:flex;justify-content:space-between;gap:8px;font-size:11.5px;color:var(--mute)}
+  .tts-muted{opacity:.45}
   .cut{display:flex; align-items:center; gap:10px; padding:6px 0;
     border-bottom:1px solid var(--line)}
   .cut:last-of-type{border-bottom:0}
@@ -947,9 +952,63 @@
       }));
   }
 
+  // v4의 실제 지원값만 선택적으로 API에 전달한다. 이 페이지의 다른 대본 규칙과 독립적이다.
+  function ttsVoiceSettings(){
+    var cfg=current.ttsVoiceSettings||{};
+    var sane=function(v,fallback){
+      return typeof v==="number" && Number.isFinite(v) && v>=0 && v<=1
+        ? Math.round(v*100)/100 : fallback;
+    };
+    return {custom:cfg.custom===true,
+      stability:sane(cfg.stability,0.50),similarity:sane(cfg.similarity,0.75)};
+  }
+
+  function ttsVoiceFingerprint(){
+    var s=ttsVoiceSettings();
+    return JSON.stringify({
+      voiceId:String(current.ttsVoiceId||"").trim(),
+      custom:s.custom,
+      settings:s.custom ? [s.stability,s.similarity] : null
+    });
+  }
+
+  function ttsSettingsSection(){
+    var s=ttsVoiceSettings();
+    var disabled=s.custom?"":" disabled";
+    var changed=!!(current.ttsRaw && current.ttsVoiceFingerprint &&
+      current.ttsVoiceFingerprint!==ttsVoiceFingerprint());
+    var h='<div class="trk" id="tts-settings-panel">'+
+      '<div class="trkhead"><b>⑤ 목소리 설정</b><span class="trkname">Eleven v4</span></div>'+
+      '<p class="hint">이 숙소의 설정으로 저장돼요. ElevenLabs 계정의 목소리 기본값은 변경하지 않아요.</p>'+
+      '<label class="trkline" style="margin-top:12px">'+
+      '<input id="ttsOverride" type="checkbox"'+(s.custom?' checked':'')+'>'+
+      '안정성·유사도 직접 조절</label>'+
+      '<p class="hint">끄면 ElevenLabs에 저장된 목소리 기본 설정을 그대로 사용해요.</p>'+
+      '<div id="ttsSliders" class="'+(s.custom?'':'tts-muted')+'">'+
+      '<label class="tts-setting-label" for="ttsStability">Stability (안정성)'+
+      '<output id="ttsStabilityValue">'+s.stability.toFixed(2)+'</output></label>'+
+      '<input class="tts-range" id="ttsStability" type="range" min="0" max="1" step="0.05" value="'+s.stability+'"'+disabled+'>'+
+      '<div class="tts-range-hint"><span>다양하고 감정적인 표현</span><span>안정적인 톤</span></div>'+
+      '<label class="tts-setting-label" for="ttsSimilarity">Similarity (유사도)'+
+      '<output id="ttsSimilarityValue">'+s.similarity.toFixed(2)+'</output></label>'+
+      '<input class="tts-range" id="ttsSimilarity" type="range" min="0" max="1" step="0.05" value="'+s.similarity+'"'+disabled+'>'+
+      '<div class="tts-range-hint"><span>자유로운 변형</span><span>원래 목소리에 가까움</span></div>'+
+      '<button type="button" class="ghost" id="ttsReset" style="width:100%;margin-top:12px">권장값으로 초기화 (0.50 / 0.75)</button>'+
+      '</div>'+
+      '<label for="ttsVoiceId">Voice ID <span>선택 · 비워두면 Supabase에 등록된 목소리</span></label>'+
+      '<input type="text" id="ttsVoiceId" autocomplete="off" spellcheck="false" value="'+esc(current.ttsVoiceId||"")+'" placeholder="ElevenLabs Voice ID (선택)">'+
+      '<p class="hint">모델 Eleven v4 · 언어 한국어 · 출력 MP3 44.1kHz / 128kbps</p>'+
+      '<p class="hint">Speed 1.2배 · Pitch +0.2반음은 ⑥ 음성 후처리에서 적용해요. Eleven v4는 Speed·Style 조절을 직접 지원하지 않아요.</p>'+
+      '<p class="status'+(changed?' bad':'')+'" id="ttsChangeNotice">'+
+      (changed?'음성 설정이 바뀌었어요. 새 설정을 쓰려면 ⑤ TTS를 다시 생성해주세요.':'')+
+      '</p></div>';
+    return h;
+  }
+
   function soundSection(){
     var h='<h2>④ 오토태그 → ⑤ TTS → ⑥ 음성 보정 → ⑦ 컷 싱크</h2><div class="card">';
     h+=ttsTagSection();
+    h+=ttsSettingsSection();
     var raw=current.ttsRaw;
     h+='<div class="trk"><b>⑤ ElevenLabs v4 TTS 생성</b>'+
       '<p class="hint">태그가 포함된 대본으로 MP3와 문자별 발화 시간을 함께 만들어요.</p>'+
@@ -1055,13 +1114,25 @@
     if(!tagged || !tagsMatchScript()){
       st("먼저 ④ 오토태그를 완료해주세요.",true); return;
     }
+    var voiceSettings=ttsVoiceSettings();
+    var requestedVoiceId=String(current.ttsVoiceId||"").trim();
+    if(requestedVoiceId && !/^[A-Za-z0-9_-]{8,100}$/.test(requestedVoiceId)){
+      st("Voice ID는 영문·숫자로 된 ElevenLabs ID를 입력해주세요.",true);return;
+    }
+    var payload={action:"synthesize_timed",text:tagged,model:"eleven_v4"};
+    if(requestedVoiceId)payload.voice_id=requestedVoiceId;
+    if(voiceSettings.custom){
+      payload.voice_settings={
+        stability:voiceSettings.stability,similarity:voiceSettings.similarity
+      };
+    }
     st("ElevenLabs v4 음성과 타임스탬프를 함께 만드는 중...");
     var r;
     try{
       r=await api(FN.tts,{
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({action:"synthesize_timed",text:tagged,model:"eleven_v4"})
+        body:JSON.stringify(payload)
       });
     }catch(e){ st("ElevenLabs에 연결하지 못했어요.",true); return; }
     var data;
@@ -1069,7 +1140,9 @@
     catch(e){ st("TTS 응답을 읽지 못했어요.",true); return; }
     if(!r.ok){
       var code=data.error||"", msg=String(data.message||code);
-      st(code==="no_key" ? "ElevenLabs API 키를 Supabase Secrets에 넣어주세요."
+      st(code==="bad_voice_settings" || code==="unsupported_voice_settings"
+        ? "음성 설정이 올바르지 않아요. 값을 확인해주세요."
+        :code==="no_key" ? "ElevenLabs API 키를 Supabase Secrets에 넣어주세요."
         :code==="no_voice" ? "ElevenLabs 목소리 ID를 설정해주세요."
         :code==="rate_limited" ? "TTS 요청 제한에 걸렸어요. 잠시 뒤 시도해주세요."
         :"음성 생성 실패: "+msg.slice(0,170),true);
@@ -1086,6 +1159,7 @@
       current.ttsRaw={id:up.id,name:"나레이션_원본.mp3",mime:"audio/mpeg",bytes:up.sizeBytes};
       current.ttsRawTagText=tagged;
       current.ttsScriptSource=source;
+      current.ttsVoiceFingerprint=ttsVoiceFingerprint();
       current.ttsAlignment=data.alignment;
       current.ttsNormalizedAlignment=data.normalized_alignment||null;
       current.tts=null;
@@ -2354,6 +2428,51 @@
       var se=document.getElementById("tagstat"); if(se){se.textContent="";se.className="status";}
       flushSave();
     });
+    // ⑤ 프로젝트별 TTS 음성 설정: 브라우저에는 API 키가 없다.
+    var vo=document.getElementById("ttsOverride");
+    var stSlider=document.getElementById("ttsStability");
+    var siSlider=document.getElementById("ttsSimilarity");
+    var voiceIdInput=document.getElementById("ttsVoiceId");
+    var resetVoice=document.getElementById("ttsReset");
+    function saveVoiceUI(){
+      if(!vo || !stSlider || !siSlider)return;
+      current.ttsVoiceSettings={
+        custom:vo.checked,
+        stability:Number(stSlider.value),
+        similarity:Number(siSlider.value)
+      };
+      stSlider.disabled=!vo.checked; siSlider.disabled=!vo.checked;
+      var sliders=document.getElementById("ttsSliders");
+      if(sliders)sliders.classList.toggle("tts-muted",!vo.checked);
+      var stableValue=document.getElementById("ttsStabilityValue");
+      var similarValue=document.getElementById("ttsSimilarityValue");
+      if(stableValue)stableValue.textContent=Number(stSlider.value).toFixed(2);
+      if(similarValue)similarValue.textContent=Number(siSlider.value).toFixed(2);
+      var notice=document.getElementById("ttsChangeNotice");
+      if(notice){
+        var changed=!!(current.ttsRaw && current.ttsVoiceFingerprint &&
+          current.ttsVoiceFingerprint!==ttsVoiceFingerprint());
+        notice.className="status"+(changed?" bad":"");
+        notice.textContent=changed
+          ?"음성 설정이 바뀌었어요. 새 설정을 쓰려면 ⑤ TTS를 다시 생성해주세요."
+          :"설정이 저장돼요. 새 값은 다음 TTS 생성부터 적용됩니다.";
+      }
+      autosave();
+    }
+    if(vo)vo.addEventListener("change",saveVoiceUI);
+    if(stSlider)stSlider.addEventListener("input",saveVoiceUI);
+    if(siSlider)siSlider.addEventListener("input",saveVoiceUI);
+    if(resetVoice)resetVoice.addEventListener("click",function(){
+      stSlider.value="0.50";siSlider.value="0.75";
+      saveVoiceUI();
+    });
+    if(voiceIdInput){
+      voiceIdInput.addEventListener("input",function(){
+        current.ttsVoiceId=voiceIdInput.value.trim();
+        saveVoiceUI();
+      });
+      voiceIdInput.addEventListener("blur",flushSave);
+    }
     var postBtn=document.getElementById("mkpost");
     if(postBtn)postBtn.addEventListener("click",async function(){
       postBtn.disabled=true;
