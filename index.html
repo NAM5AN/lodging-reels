@@ -126,6 +126,21 @@
   .cpick img{width:100%; height:100%; object-fit:cover; display:block}
   .cpick i{position:absolute; left:2px; top:2px; font-style:normal; font-size:10px;
     font-weight:700; color:#fff; background:rgba(0,0,0,.7); border-radius:4px; padding:0 4px}
+  .erow{display:flex; flex-wrap:wrap; gap:10px; padding:10px 0; border-bottom:1px solid var(--line)}
+  .erow:last-child{border-bottom:0}
+  .epair{display:flex; align-items:center; gap:6px; flex:0 0 auto}
+  .eimg{position:relative; width:72px; aspect-ratio:9/16; border-radius:8px; overflow:hidden;
+    border:1px solid var(--line); background:var(--field); display:flex; align-items:center; justify-content:center}
+  .eimg img{width:100%; height:100%; object-fit:cover; display:block}
+  .eimg.empty span{font-size:11px; color:var(--mute); text-align:center; padding:0 4px; word-break:keep-all}
+  .eimg i{position:absolute; left:2px; top:2px; font-style:normal; font-size:10px;
+    font-weight:700; color:#fff; background:rgba(0,0,0,.7); border-radius:4px; padding:0 4px}
+  .earrow{color:var(--mute); font-size:14px}
+  .eside{flex:1 1 180px; min-width:0}
+  .ebtns{display:flex; gap:6px; margin-top:6px}
+  .ebtns button{flex:1}
+  label.chk{display:flex; align-items:center; gap:8px; font-weight:500}
+  label.chk input{width:auto; margin:0}
   .cstrip{display:flex; gap:6px; overflow-x:auto; padding:8px 0;
     border-bottom:1px solid var(--line); -webkit-overflow-scrolling:touch}
   .cstrip button{flex:0 0 58px; width:58px; height:78px; padding:0; position:relative;
@@ -201,7 +216,9 @@
 
   // 사진은 영상이 1080x1920 이라 2160px 이면 충분하다.
   // 상세페이지는 글씨를 읽어야 해서 더 크게 남긴다.
-  var LIMITS = {photo:{edge:2160, q:0.88}, info:{edge:2400, q:0.92}};
+  var LIMITS = {photo:{edge:2160, q:0.88}, info:{edge:2400, q:0.92}, ref:{edge:2048, q:0.9}};
+  // 이미지 종류 → 프로젝트 필드. 레퍼런스(ref)는 ⑨ 이미지 가공에서만 쓴다.
+  function keyOf(kind){ return kind==="photo" ? "photos" : kind==="ref" ? "refs" : "infos"; }
 
   // ---------- Supabase ----------
   // SDK 없이 REST 로 직접 간다. 외부 스크립트가 없으니 깨질 데가 적다.
@@ -213,7 +230,9 @@
   };
   var FN = {
     ai:  SUPA.url + "/functions/v1/lodging-reels-ai",
-    tts: SUPA.url + "/functions/v1/lodging-reels-tts"
+    tts: SUPA.url + "/functions/v1/lodging-reels-tts",
+    // Supabase 가 아니라 이 Vercel 프로젝트의 함수다. OIDC 로 키 없이 AI Gateway 에 붙는다.
+    image: "/api/image-edit"
   };
 
   var session=null, uid=null, local=false;
@@ -304,6 +323,9 @@
         v.id=row.id;
         v.photos=(v.photos||[]).map(function(x){return Object.assign({},x)});
         v.infos=(v.infos||[]).map(function(x){return Object.assign({},x)});
+        v.refs=(v.refs||[]).map(function(x){return Object.assign({},x)});
+        v.edits=Object.assign({}, v.edits||{});
+        v.editNotes=Object.assign({}, v.editNotes||{});
         return v;
       });
       local=false;
@@ -328,7 +350,8 @@
   }
 
   async function removeProject(p){
-    var ids=(p.photos||[]).concat(p.infos||[]).map(function(x){return x.id});
+    var ids=(p.photos||[]).concat(p.infos||[]).concat(p.refs||[]).map(function(x){return x.id});
+    Object.keys(p.edits||{}).forEach(function(k){ var e=p.edits[k]; if(e && e.id) ids.push(e.id); });
     [p.tts, p.bgm].forEach(function(a){ if(a && a.id) ids.push(a.id); });
     for(var i=0;i<ids.length;i++){ try{ await storeDelete(ids[i]); }catch(e){} }
     try{
@@ -413,8 +436,13 @@
 
   async function addImages(files, kind){
     if(!uid){ toast("로그인이 필요해요"); return; }
-    var key = kind==="photo" ? "photos" : "infos";
+    var key = keyOf(kind);
     current[key] = current[key]||[];
+    if(kind==="ref"){
+      var room=EDIT.maxRefs-current[key].length;
+      if(room<=0){ toast("레퍼런스는 "+EDIT.maxRefs+"장까지예요"); return; }
+      if(files.length>room){ toast("레퍼런스는 "+EDIT.maxRefs+"장까지라 "+room+"장만 올려요"); files=files.slice(0,room); }
+    }
     var done=0, fail=0, fresh=[];
 
     for(var i=0;i<files.length;i++){
@@ -440,16 +468,22 @@
 
 
   async function dropImage(kind, idx){
-    var key = kind==="photo" ? "photos" : "infos";
+    var key = keyOf(kind);
     var it = current[key][idx];
     current[key].splice(idx,1);
+    var ed = (kind==="photo" && it && current.edits) ? current.edits[it.id] : null;
+    if(kind==="photo" && it){
+      if(current.edits) delete current.edits[it.id];
+      if(current.editNotes) delete current.editNotes[it.id];
+    }
     await persist(current);
     if(it){ try{ await storeDelete(it.id); }catch(e){} }
+    if(ed && ed.id){ try{ await storeDelete(ed.id); }catch(e){} }
     renderEdit(current);
   }
 
   async function moveImage(kind, idx, dir){
-    var key = kind==="photo" ? "photos" : "infos";
+    var key = keyOf(kind);
     var a=current[key], j=idx+dir;
     if(j<0||j>=a.length) return;
     var t=a[idx]; a[idx]=a[j]; a[j]=t;
@@ -831,7 +865,7 @@
   // ---------- ⑤ 컷 맞추기 ----------
   function matchSection(){
     var cuts=scriptLines(), ph=current.photos||[];
-    var h='<h2>⑨ 싱크에 맞춰 배치한 컷에 사진 넣기</h2><div class="card">';
+    var h='<h2>⑩ 싱크에 맞춰 배치한 컷에 사진 넣기</h2><div class="card">';
     if(!timelineReady()){
       return h+'<p class="hint">먼저 ⑦ 자막 싱크를 완료해주세요. 음성 타임라인이 만들어져야 컷별로 사진을 연결할 수 있어요.</p></div>';
     }
@@ -848,14 +882,14 @@
     h+='<div class="cut cover"><span class="cn">커버</span>'+
        '<span class="ct">'+esc(((current.cover||"").split("\n")[1]||"").trim()||"커버 문구")+'</span>'+
        '<button type="button" class="cpick" data-cut="-1">'+
-       '<img src="'+blobUrl(ph[ci].id)+'" alt=""><i>'+(ci+1)+'</i></button></div>';
+       '<img src="'+blobUrl(srcId(ph[ci]))+'" alt=""><i>'+(ci+1)+'</i></button></div>';
     cuts.forEach(function(t,i){
       var pi=Math.min(ph.length-1, m[i]||0);
       h+='<div class="cut"><span class="cn">'+String(i+1).padStart(2,"0")+'</span>'+
          '<span class="ct">'+esc(t)+'<span class="hint" style="display:block">'+
          (current.cutTimeline[i].start).toFixed(2)+'–'+(current.cutTimeline[i].end).toFixed(2)+'초</span></span>'+
          '<button type="button" class="cpick" data-cut="'+i+'">'+
-         '<img src="'+blobUrl(ph[pi].id)+'" alt=""><i>'+(pi+1)+'</i></button></div>';
+         '<img src="'+blobUrl(srcId(ph[pi]))+'" alt=""><i>'+(pi+1)+'</i></button></div>';
     });
     h+='<button type="button" id="remap" class="ghost" style="width:100%;margin-top:10px">순서대로 다시 배분</button></div>';
     return h;
@@ -1133,8 +1167,8 @@
   }
 
   function videoSection(){
-    var h='<h2>⑩ 영상 만들기</h2><div class="card">';
-    h+='<p class="hint" style="margin-bottom:10px">자막은 ⑦에서 계산한 발화 시각에 표시되고, 사진은 ⑨에서 정한 컷에 들어가요.</p>';
+    var h='<h2>⑪ 영상 만들기</h2><div class="card">';
+    h+='<p class="hint" style="margin-bottom:10px">자막은 ⑦에서 계산한 발화 시각에 표시되고, 사진은 ⑩에서 정한 컷에 들어가요. ⑨에서 가공한 사진은 가공본이 들어가요.</p>';
     h+=trackRow({k:"bgm",h:"배경음악",hint:"영상 길이에 맞춰 반복 재생돼요."});
     h+='<div style="display:flex;gap:8px;margin-top:12px">'+
          '<button type="button" id="mkthumb" style="flex:1">썸네일 보기</button>'+
@@ -1387,7 +1421,7 @@
     var d=document.createElement("div");
     d.className="cstrip"; d.dataset.cut=String(cutIdx);
     d.innerHTML=ph.map(function(x,i){
-      return '<button type="button" data-pi="'+i+'"><img src="'+blobUrl(x.id)+'" alt=""><i>'+(i+1)+'</i></button>';
+      return '<button type="button" data-pi="'+i+'"><img src="'+blobUrl(srcId(x))+'" alt=""><i>'+(i+1)+'</i></button>';
     }).join("");
     row.insertAdjacentElement("afterend", d);
     Array.prototype.forEach.call(d.querySelectorAll("button"),function(b){
@@ -2201,7 +2235,7 @@
     }
     var ci=(typeof current.coverPhoto==="number" && current.coverPhoto<photos.length)
            ? current.coverPhoto : 0;
-    var im=await loadImg(blobUrl(photos[ci].id));
+    var im=await loadImg(blobUrl(srcId(photos[ci])));
     canvas.width=VIDEO.w; canvas.height=VIDEO.h;
     var g=canvas.getContext("2d");
     drawCover(g, im, (current.cover||"").split("\n").map(function(x){return x.trim()}));
@@ -2278,7 +2312,7 @@
     }
     var imgs=[];
     try{
-      for(var i=0;i<photos.length;i++) imgs.push(await loadImg(blobUrl(photos[i].id)));
+      for(var i=0;i<photos.length;i++) imgs.push(await loadImg(blobUrl(srcId(photos[i]))));
     }catch(e){ st("사진을 불러오지 못했어요.",true); return; }
 
     var cuts=(current.script||"").split("\n").map(function(x){return x.trim()})
@@ -2444,13 +2478,209 @@
   window.addEventListener("blur", flushSave);
 
   // ---------- 편집 ----------
-  function imageSection(kind, title, hint){
-    var key = kind==="photo" ? "photos" : "infos";
-    var list = current[key]||[];
-    var h='<h2>'+esc(title)+'</h2><div class="card">';
-    h+='<p class="hint" style="margin:0 0 10px">'+esc(hint)+'</p>';
-    h+='<button type="button" class="pickbtn" data-pick="'+kind+'">'+
-       esc(kind==="photo"?"사진 고르기":"캡처 고르기")+'</button>'+
+  // ---------- ⑨ 이미지 가공 ----------
+  // ⑧ 사진 한 장 한 장을 기본으로, 추가 레퍼런스와 프롬프트로 GPT Image 2.5 Sunburst 가
+  // 1080x1920 세로 이미지를 만든다. 결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에서 결과로 바뀐다.
+  // 결과를 지우면 원본으로 돌아간다. 원본은 건드리지 않는다.
+  var EDIT = {
+    w:1080, h:1920, maxRefs:15,
+    qualities:[["medium","보통 · 빠름"],["high","높음 · 기본"],["xhigh","아주 높음 · 느림"],["max","최고 · 가장 느림"]]
+  };
+  var editBusy=false, editTimer=null;
+
+  // ⑩·⑪ 이 쓸 실제 이미지. 가공본이 있으면 그걸, 없으면 원본.
+  function srcId(p){
+    var e = p && current && current.edits ? current.edits[p.id] : null;
+    return (e && e.id) || (p && p.id);
+  }
+
+  // 모델에 보내는 최종 프롬프트. 화면에도 그대로 보여준다.
+  // 'Image 1' 은 Vercel 함수가 images 배열 맨 앞에 넣는 기본 사진이다.
+  function editPromptText(proj, note){
+    proj = proj || current;
+    var refs=(proj.refs||[]).length;
+    var head="Image 1 is the base photo to edit.";
+    if(refs) head+=" Images 2"+(refs>1?"-"+(refs+1):"")+" are references only.";
+    if(proj.editKeepReal!==false){
+      // 숙소 사진을 실제와 다르게 바꾸면 DM 받은 사람이 숙소를 보고 바로 돌아선다.
+      head+=" Image 1 is a real accommodation: keep its actual space, layout, furniture, windows and view;"+
+            " do not add rooms or facilities that are not in it.";
+      if(refs) head+=" Use the references for style, mood, lighting or props, not for the place itself.";
+    }
+    head+=" Output one vertical 9:16 frame for a short-form video.";
+    var body=(proj.editPrompt||"").trim();
+    var extra=(note||"").trim();
+    return head+"\n\n"+body+(extra ? "\n\nFor this photo only: "+extra : "");
+  }
+
+  function editSection(){
+    var ph=current.photos||[], ed=current.edits||{}, notes=current.editNotes||{};
+    var h='<h2>⑨ 이미지 가공</h2><div class="card">';
+    h+='<p class="hint" style="margin:0 0 10px">⑧ 사진 한 장 한 장을 기본으로, 아래 레퍼런스와 프롬프트에 맞춰 '+
+       'GPT Image 2.5 Sunburst 가 1080×1920 세로 이미지를 만들어요. 결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에 결과로 들어가요. '+
+       '결과를 지우면 원본으로 돌아가요.</p>';
+    if(!ph.length) return h+'<p class="hint">⑧ 사진을 먼저 올려주세요.</p></div>';
+
+    h+='<label style="margin-top:0">추가 레퍼런스 <span>선택 · 최대 '+EDIT.maxRefs+'장 · 모든 사진에 같이 들어가요</span></label>';
+    h+=imageGrid("ref");
+
+    h+='<label for="f_editPrompt">프롬프트 <span>모든 사진에 공통</span></label>'+
+       '<textarea id="f_editPrompt" style="min-height:110px" placeholder="예: 창밖을 해 질 녘 하늘로 바꾸고 실내 조명은 따뜻하게. 사람은 넣지 마세요.">'+
+       esc(current.editPrompt||"")+'</textarea>';
+    h+='<label class="chk"><input type="checkbox" id="f_editKeepReal"'+(current.editKeepReal===false?'':' checked')+
+       '> 실제 공간 유지 문장 자동 추가</label>';
+    h+='<p class="hint">켜두면 "1번 사진은 실제 숙소니 공간·가구·창·전망은 그대로, 없는 시설은 넣지 말 것" 이 앞에 붙어요. '+
+       '실제와 다른 사진이면 DM 받은 사람이 숙소를 보고 돌아서요.</p>';
+    h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">모델에 실제로 가는 문장 보기</summary>'+
+       '<pre id="editpreview" style="white-space:pre-wrap;font-size:12px;margin:8px 0 0">'+esc(editPromptText(current,""))+'</pre></details>';
+
+    h+='<label for="f_editQuality">품질</label><select id="f_editQuality">'+
+       EDIT.qualities.map(function(q){
+         return '<option value="'+q[0]+'"'+(q[0]===(current.editQuality||"high")?' selected':'')+'>'+esc(q[1])+'</option>';
+       }).join("")+'</select>';
+    h+='<p class="hint">한 장씩 차례로 만들어서 시간이 걸려요. 품질을 올릴수록 느리고 비싸요.</p>';
+
+    var missing=ph.filter(function(p){ return !ed[p.id]; }).length;
+    var dis=editBusy?' disabled':'';
+    h+='<button type="button" id="editall" class="primary" style="width:100%;margin-top:12px"'+(missing&&!editBusy?'':' disabled')+'>'+
+       (missing ? '결과 없는 사진 전부 만들기 ('+missing+'장)' : '모든 사진에 결과가 있어요')+'</button>';
+    h+='<p class="status" id="editstat"></p>';
+
+    h+='<div>';
+    ph.forEach(function(p,i){
+      var e=ed[p.id];
+      h+='<div class="erow">'+
+         '<div class="epair">'+
+           '<div class="eimg"><img src="'+blobUrl(p.id)+'" alt=""><i>'+(i+1)+'</i></div>'+
+           '<span class="earrow">→</span>'+
+           '<div class="eimg'+(e?'':' empty')+'">'+(e?'<img src="'+blobUrl(e.id)+'" alt="">':'<span>아직 없음</span>')+'</div>'+
+         '</div>'+
+         '<div class="eside">'+
+           '<input type="text" data-enote="'+esc(p.id)+'" placeholder="이 사진만 추가 지시 (선택)" value="'+esc(notes[p.id]||"")+'">'+
+           '<div class="ebtns">'+
+             '<button type="button" data-edit="'+i+'"'+dis+'>'+(e?'다시 만들기':'만들기')+'</button>'+
+             (e?'<button type="button" class="ghost" data-unedit="'+i+'"'+dis+'>결과 지우기</button>':'')+
+           '</div>'+
+           (e && e.note ? '<p class="hint">'+esc(e.note)+'</p>' : '')+
+         '</div></div>';
+    });
+    h+='</div></div>';
+    return h;
+  }
+
+  function b64ToBlob(b64, mime){
+    var bin=atob(b64), n=bin.length, u=new Uint8Array(n);
+    for(var i=0;i<n;i++) u[i]=bin.charCodeAt(i);
+    return new Blob([u], {type:mime||"image/jpeg"});
+  }
+
+  // 받은 이미지를 정확히 1080x1920 으로. 1088x1920 이 오면 좌우 4px 만 잘린다.
+  // 다른 비율이 오면(크기 옵션을 Gateway 가 무시한 경우) 가운데를 잘라 맞추고 그 사실을 남긴다.
+  function fitVertical(blob){
+    return new Promise(function(res,rej){
+      var u=URL.createObjectURL(blob), img=new Image();
+      img.onload=function(){
+        var sw=img.naturalWidth, sh=img.naturalHeight, W=EDIT.w, H=EDIT.h;
+        var s=Math.max(W/sw, H/sh), cw=W/s, ch=H/s;
+        var c=document.createElement("canvas"); c.width=W; c.height=H;
+        var g=c.getContext("2d"); g.imageSmoothingQuality="high";
+        g.drawImage(img, (sw-cw)/2, (sh-ch)/2, cw, ch, 0, 0, W, H);
+        URL.revokeObjectURL(u);
+        var note = Math.abs(sw/sh - W/H) > 0.02 ? ("받은 크기 "+sw+"×"+sh+" 를 9:16 으로 잘라 맞췄어요") : "";
+        c.toBlob(function(b){ b ? res({blob:b, srcW:sw, srcH:sh, note:note}) : rej(new Error("변환 실패")); },
+                 "image/jpeg", 0.92);
+      };
+      img.onerror=function(){ URL.revokeObjectURL(u); rej(new Error("결과 이미지를 못 읽었어요")); };
+      img.src=u;
+    });
+  }
+
+  async function editOne(proj, photoId){
+    var ph=(proj.photos||[]).find(function(x){ return x.id===photoId; });
+    if(!ph) throw new Error("사진이 없어요");
+    if(!(proj.editPrompt||"").trim()) throw new Error("프롬프트를 먼저 적어주세요");
+    var note=(proj.editNotes||{})[photoId]||"";
+    var body={
+      base: ph.id,
+      refs: (proj.refs||[]).map(function(r){ return r.id; }),
+      prompt: editPromptText(proj, note),
+      quality: proj.editQuality||"high"
+    };
+    var r=await api(FN.image,{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    var t=await r.text(), j=null;
+    try{ j=JSON.parse(t); }catch(e){}
+    if(!r.ok || !j || !j.b64){
+      var msg=(j && (j.message||j.error)) || t.slice(0,160) || ("HTTP "+r.status);
+      if(r.status===404) msg="이미지 가공 함수(/api/image-edit)가 아직 배포되지 않았어요.";
+      else if(r.status===504 && !j) msg="시간 초과로 끊겼어요. 품질을 한 단계 낮춰 다시 해보세요.";
+      throw new Error(msg);
+    }
+    var fit=await fitVertical(b64ToBlob(j.b64, j.mime));
+    var up=await storeUpload(newPath(proj.id, "edited", "jpg"), fit.blob, "image/jpeg");
+    proj.edits=proj.edits||{};
+    var old=proj.edits[photoId];
+    proj.edits[photoId]={
+      id:up.id, w:EDIT.w, h:EDIT.h, size:up.sizeBytes, srcW:fit.srcW, srcH:fit.srcH,
+      quality:j.quality||body.quality, at:Date.now(),
+      note: fit.note || (j.minimal ? "크기·품질 옵션 없이 만들어졌어요" : "")
+    };
+    await persist(proj);
+    if(old && old.id && old.id!==up.id){ try{ await storeDelete(old.id); }catch(e){} }
+  }
+
+  function editStatus(m, bad){
+    var e=document.getElementById("editstat");
+    if(e){ e.textContent=m; e.className="status"+(bad?" bad":""); }
+  }
+
+  // 사진 여러 장을 차례로. 한 장이 실패해도 나머지는 계속 만든다.
+  async function runEdits(photoIds){
+    if(editBusy) return;
+    var proj=current;
+    if(!(proj.editPrompt||"").trim()){ editStatus("프롬프트를 먼저 적어주세요.", true); return; }
+    flushSave();
+    editBusy=true;
+    var done=0, fail=0, lastErr="", t0=0, label="";
+    var tick=function(){ editStatus(label+" · "+Math.round((Date.now()-t0)/1000)+"초"); };
+    if(current===proj) renderEdit(proj);
+    try{
+      for(var k=0;k<photoIds.length;k++){
+        var idx=(proj.photos||[]).findIndex(function(x){ return x.id===photoIds[k]; });
+        if(idx<0) continue;
+        label=(photoIds.length>1 ? (k+1)+"/"+photoIds.length+" · " : "")+(idx+1)+"번 사진 만드는 중";
+        t0=Date.now(); tick();
+        clearInterval(editTimer); editTimer=setInterval(tick, 1000);
+        try{
+          await editOne(proj, photoIds[k]);
+          done++;
+        }catch(e){
+          fail++; lastErr=(e && e.message) || String(e);
+          console.error("image edit failed", e);
+        }
+        clearInterval(editTimer);
+        if(current===proj) renderEdit(proj);
+      }
+    } finally {
+      clearInterval(editTimer); editBusy=false;
+      if(current===proj) renderEdit(proj);
+    }
+    editStatus(fail ? (done+"장 만들었고 "+fail+"장 실패했어요. "+lastErr) : (done+"장 만들었어요."), !!fail);
+  }
+
+  async function dropEdit(photoId){
+    var e=(current.edits||{})[photoId];
+    if(!e) return;
+    delete current.edits[photoId];
+    await persist(current);
+    try{ await storeDelete(e.id); }catch(x){}
+    renderEdit(current);
+  }
+
+  // 고르기 버튼 + 숨은 입력 + 썸네일 격자. 섹션 제목·카드 없이 쓸 수 있게 따로 둔다.
+  function imageGrid(kind){
+    var list = current[keyOf(kind)]||[];
+    var h='<button type="button" class="pickbtn" data-pick="'+kind+'">'+
+       esc(kind==="photo"?"사진 고르기":kind==="ref"?"레퍼런스 고르기":"캡처 고르기")+'</button>'+
        '<input class="sr" type="file" accept="image/*" multiple '+
        'id="file_'+kind+'" data-kind="'+kind+'">';
     if(list.length){
@@ -2466,6 +2696,14 @@
       });
       h+='</div>';
     }
+    return h;
+  }
+
+  function imageSection(kind, title, hint){
+    var list = current[keyOf(kind)]||[];
+    var h='<h2>'+esc(title)+'</h2><div class="card">';
+    h+='<p class="hint" style="margin:0 0 10px">'+esc(hint)+'</p>';
+    h+=imageGrid(kind);
     if(kind==="info"){
       h+='<p class="status" id="autostat"></p>';
       if(list.length) h+='<button type="button" id="refill" style="width:100%;margin-top:8px">캡처 다시 읽기</button>';
@@ -2475,7 +2713,7 @@
 
   function renderEdit(p){
     current=p;
-    current.photos=current.photos||[]; current.infos=current.infos||[];
+    current.photos=current.photos||[]; current.infos=current.infos||[]; current.refs=current.refs||[];
     var h=imageSection("info","① 업체 상세페이지 캡처",
        "먼저 올리세요. 적힌 내용을 읽어서 아래 칸을 자동으로 채워줘요. "+
        "길어도 그대로 올리면 돼요. 영상에는 안 들어가요.");
@@ -2497,8 +2735,9 @@
 
     h+=imageSection("photo","⑧ 사진 소스 선택",
        "음성 싱크를 완료한 뒤 사진을 올리세요. 업로드 순서는 중요하지 않아요. "+
-       "⑨에서 자막 컷마다 사진을 골라 연결합니다.");
+       "⑨에서 가공하고, ⑩에서 자막 컷마다 사진을 골라 연결합니다.");
 
+    h+=editSection();
     h+=matchSection();
     h+=videoSection();
     h+='<p class="status" id="savemark">저장됨</p>';
@@ -2711,6 +2950,50 @@
     Array.prototype.forEach.call(view.querySelectorAll(".cpick"),function(b){
       b.addEventListener("click",function(){ openPicker(b, +b.dataset.cut); });
     });
+    // ⑨ 이미지 가공
+    var ep=document.getElementById("f_editPrompt");
+    var refreshPreview=function(){
+      var pv=document.getElementById("editpreview");
+      if(pv) pv.textContent=editPromptText(current,"");
+    };
+    if(ep){
+      ep.addEventListener("input",function(){ current.editPrompt=ep.value; refreshPreview(); autosave(); });
+      ep.addEventListener("blur",function(){ current.editPrompt=ep.value; flushSave(); });
+    }
+    var ek=document.getElementById("f_editKeepReal");
+    if(ek) ek.addEventListener("change",function(){ current.editKeepReal=ek.checked; refreshPreview(); flushSave(); });
+    var eq=document.getElementById("f_editQuality");
+    if(eq) eq.addEventListener("change",function(){ current.editQuality=eq.value; flushSave(); });
+    Array.prototype.forEach.call(view.querySelectorAll("[data-enote]"),function(inp){
+      inp.addEventListener("input",function(){
+        current.editNotes=current.editNotes||{};
+        var v=inp.value.trim();
+        if(v) current.editNotes[inp.dataset.enote]=inp.value; else delete current.editNotes[inp.dataset.enote];
+        autosave();
+      });
+      inp.addEventListener("blur",function(){ flushSave(); });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("[data-edit]"),function(b){
+      b.addEventListener("click",function(){
+        var p=(current.photos||[])[+b.dataset.edit];
+        if(p) runEdits([p.id]);
+      });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("[data-unedit]"),function(b){
+      b.addEventListener("click",function(){
+        var p=(current.photos||[])[+b.dataset.unedit];
+        if(p && confirm("가공 결과를 지울까요? 원본 사진은 그대로예요.")) dropEdit(p.id);
+      });
+    });
+    var ea=document.getElementById("editall");
+    if(ea) ea.addEventListener("click",function(){
+      var ed=current.edits||{};
+      var ids=(current.photos||[]).filter(function(p){ return !ed[p.id]; }).map(function(p){ return p.id; });
+      if(!ids.length) return;
+      if(!confirm(ids.length+"장을 한 장씩 차례로 만들어요. 진행할까요?")) return;
+      runEdits(ids);
+    });
+
     var rm=document.getElementById("remap");
     if(rm) rm.addEventListener("click",function(){
       current.map=[]; current.coverPhoto=0; ensureMap(); flushSave(); renderEdit(current);
@@ -2769,11 +3052,13 @@
     var f=((current.folder||"").trim())||"폴더명";
     document.getElementById("guide").textContent =
       "① 캡처 올리기 → 빈 칸이 자동으로 채워져요\n"+
-      "② 정보 확인 (가격 어필 방식 꼭 고르기)\n"+
-      "③ 대본 만들기 → 읽어보고 고치기\n"+
-      "④ 대본에 어울리는 사진 올리기\n"+
-      "⑤ 컷마다 사진 고르기\n"+
-      "⑥ 목소리 만들고 영상 만들기\n\n"+
+      "② 정보 확인 (인원·제약 조건 꼭 채우기)\n"+
+      "③ 대본 만들기 → 가격 어필 방식 고르고 읽어보기\n"+
+      "④~⑦ 오토태그 → 목소리 → 음성 보정 → 컷 싱크\n"+
+      "⑧ 사진 올리기\n"+
+      "⑨ 사진 가공 (선택)\n"+
+      "⑩ 컷마다 사진 고르기\n"+
+      "⑪ 영상 만들기\n\n"+
       "PC 로 가져가려면:\n"+
       "1. '폴더 받기' 를 누르면 "+f+".zip 이 받아져요\n\n"+
       "2. reels-runner / input / photos 안에\n"+

@@ -19,7 +19,9 @@ jobs:
         with:
           node-version: '22'
       - name: Check JS syntax
-        run: node --check reels-media.js
+        run: |
+          node --check reels-media.js
+          node --check api/image-edit.js
       - name: Test timeline and verify original scriptPrompt
         run: node --test tests/*.test.cjs
       - name: Check SoundTouch audio processing CDN assets
