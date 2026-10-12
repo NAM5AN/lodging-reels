@@ -137,7 +137,10 @@ test("one reference reads as singular; keep-real sentence can be turned off",()=
   assert.match(one,/do not add rooms or facilities/);
   const off=b.editPromptText({editKeepReal:false,editSpecs:{p:{prompt:"x",refs:[]}}},"p");
   assert.doesNotMatch(off,/real accommodation/);
-  assert.match(off,/^Image 1 is the base photo to edit\. Preserve the full original framing, orientation and aspect ratio/);
+  assert.match(off,/^Image 1 is the base photo to edit\. Preserve the original aspect ratio/);
+  assert.match(one,/keep its actual space, layout, furniture, windows and view/);
+  assert.match(one,/do not add rooms or facilities/);
+  assert.doesNotMatch(one,/Preserve the full original framing|Do not crop|reframe it/);
 });
 
 test("text typed under the old shared-prompt layout is carried into the photo's own prompt",()=>{
