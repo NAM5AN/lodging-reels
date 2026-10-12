@@ -21,7 +21,7 @@ jobs:
       - name: Check JS syntax
         run: node --check reels-media.js
       - name: Test timeline and verify original scriptPrompt
-        run: node --test tests/reels-media.test.cjs
+        run: node --test tests/*.test.cjs
       - name: Check SoundTouch audio processing CDN assets
         run: |
           curl --fail --location --silent --show-error --head --retry 2 'https://esm.sh/@soundtouchjs/audio-worklet@2.1.1'
