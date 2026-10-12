@@ -101,3 +101,51 @@ test("client canonical comparison tolerates punctuation and tags but not changed
   assert.notEqual(env.ctx.canonicalTtsSpeech(base),
     env.ctx.canonicalTtsSpeech("[thoughtful] 4인 기준, 30만원대!"));
 });
+
+test("Korean Audio Tags are rejected, English single and comma-combined tags are accepted",()=>{
+  const env=setup();
+  assert.match(env.ctx.ttsTagLanguageError("[신나게] 짐 풀기도 전에 수영복부터"),/영어/);
+  assert.match(env.ctx.ttsTagLanguageError("짐 풀기 전에 [놀랍다는 듯] 와!"),/영어/);
+  assert.equal(env.ctx.ttsTagLanguageError("[surprised] 짐 풀기도 전에 수영복부터"),"");
+  assert.equal(env.ctx.ttsTagLanguageError("[whispering, playful] 수영복부터 꺼낸 이유"),"");
+  assert.equal(env.ctx.ttsTagLanguageError("태그 없이 한국어 내레이션"),"");
+  assert.match(env.ctx.ttsTagLanguageError("[unterminated 대본"),/영어/);
+});
+
+test("auto-tag response with Korean brackets is never accepted or saved",async()=>{
+  const env=setup({ok:true,body:{text:"[신나게] 가격부터 봤는데, [놀랍다는 듯] 객실값이 잘못됐어요.",integrity:true}});
+  await env.ctx.makeTtsTags();
+  assert.equal(env.saved,0);
+  assert.equal(env.renders,0);
+  assert.equal(env.state.ttsTagged,undefined);
+  assert.match(env.stat.textContent,/영어/);
+});
+
+test("explicit tag language conversion failure surfaces a meaningful status",async()=>{
+  const env=setup({ok:false,body:{error:"tag_language_failed",message:"Could not correct"}});
+  await env.ctx.makeTtsTags();
+  assert.equal(env.saved,0);
+  assert.match(env.stat.textContent,/자동 영어 교정에 실패/);
+});
+
+test("saved legacy Korean tags are considered stale even when narration matches",()=>{
+  const env=setup();
+  env.state.ttsTagged="[신나게] 가격부터 봤는데 [놀랍다는 듯] 객실값이 잘못됐어요";
+  env.state.ttsTagSource=env.state.script;
+  assert.equal(env.ctx.tagsMatchScript(),false);
+  env.state.ttsTagged="[surprised] 가격부터 봤는데 [thoughtful] 객실값이 잘못됐어요";
+  assert.equal(env.ctx.tagsMatchScript(),true);
+});
+
+test("TTS synthesis refuses legacy Korean Audio Tags before making any API call",async()=>{
+  const env=setup();
+  env.state.ttsTagged="[신나게] 가격부터 봤는데 객실값이 잘못됐어요";
+  env.state.ttsTagSource=env.state.script;
+  const vdstat={textContent:"",className:"status"};
+  env.ctx.document.getElementById=(id)=>id==="vdstat"?vdstat:null;
+  vm.runInNewContext(section("  async function makeTTS(){","  async function makeAudioProcessed(){"),env.ctx);
+  await env.ctx.makeTTS();
+  assert.equal(env.calls.length,0);
+  assert.match(vdstat.textContent,/영어/);
+  assert.match(vdstat.className,/bad/);
+});
