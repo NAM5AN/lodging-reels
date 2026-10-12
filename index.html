@@ -166,6 +166,32 @@
     border:2px dashed rgba(255,255,255,.75); pointer-events:none}
   .tprev .sq b{position:absolute; right:4px; bottom:2px; font-size:10px;
     font-weight:700; color:#fff; text-shadow:0 1px 3px #000}
+
+  /* 확대보기: 데스크톱 휠, 모바일 두 손가락 확대, 확대 후 드래그 이동 */
+  .previewable{cursor:zoom-in;touch-action:manipulation}
+  .previewable:focus-visible{outline:3px solid var(--accent);outline-offset:-3px}
+  .cut-look{flex:0 0 38px;width:38px;height:44px;padding:0;border:0;background:transparent;
+    font-size:20px;line-height:1;display:flex;align-items:center;justify-content:center}
+  .cstrip-item{position:relative;flex:0 0 58px;width:58px;height:78px}
+  .cstrip .cstrip-item>button[data-pi]{width:100%;height:100%}
+  .cstrip .cstrip-look{position:absolute;right:0;bottom:0;z-index:1;flex:none;width:30px;height:30px;
+    padding:0;border:0;border-radius:7px 0 7px 0;background:rgba(0,0,0,.72);color:#fff;font-size:16px}
+  .photo-lightbox[hidden]{display:none}
+  .photo-lightbox{position:fixed;inset:0;z-index:1000;background:rgba(9,9,12,.96);overscroll-behavior:contain}
+  .photo-lightbox .lb-stage{position:absolute;left:10px;right:10px;
+    top:calc(60px + env(safe-area-inset-top,0px));
+    bottom:calc(62px + env(safe-area-inset-bottom,0px));
+    overflow:hidden;touch-action:none;cursor:grab}
+  .photo-lightbox .lb-stage.dragging{cursor:grabbing}
+  .photo-lightbox .lb-photo{position:absolute;left:50%;top:50%;width:0;height:0;
+    max-width:none;max-height:none;object-fit:contain;touch-action:none;
+    user-select:none;-webkit-user-select:none;-webkit-user-drag:none;cursor:inherit}
+  .photo-lightbox .lb-close{position:absolute;right:calc(14px + env(safe-area-inset-right,0px));
+    top:calc(8px + env(safe-area-inset-top,0px));z-index:1;
+    width:46px;height:46px;padding:0;color:#fff;background:rgba(255,255,255,.16);
+    border:1px solid rgba(255,255,255,.28);border-radius:50%;font-size:30px;line-height:1}
+  .photo-lightbox .lb-help{position:absolute;bottom:calc(14px + env(safe-area-inset-bottom,0px));
+    left:12px;right:12px;text-align:center;color:#ddd;font-size:12px;pointer-events:none}
 </style>
 </head>
 <body>
@@ -175,6 +201,13 @@
 </div>
 <div class="bar"><div class="inner" id="bar"></div></div>
 <div class="toast" id="toast"></div>
+<div id="photoLightbox" class="photo-lightbox" role="dialog" aria-modal="true" aria-label="사진 크게 보기" hidden>
+  <div class="lb-stage" id="lbStage">
+    <img class="lb-photo" id="lbPhoto" alt="확대한 사진" draggable="false">
+  </div>
+  <button type="button" id="lbClose" class="lb-close" aria-label="사진 닫기">×</button>
+  <div class="lb-help">드래그로 이동 · 휠 또는 두 손가락으로 확대/축소 · 바깥쪽 터치로 닫기</div>
+</div>
 
 <script>
 (function(){
@@ -260,6 +293,165 @@
   function blobUrl(id){
     return SUPA.url + "/storage/v1/object/public/" + SUPA.bucket + "/" + id;
   }
+
+
+  // ---------- 사진 확대보기 ----------
+  // 썸네일은 여러 번 재렌더되므로 이벤트는 #view 에 한 번만 위임한다.
+  function previewImg(url, label){
+    var u=esc(url), name=esc(label||"사진");
+    return '<img class="previewable" src="'+u+'" data-preview="'+u+
+      '" alt="'+name+'" role="button" tabindex="0" aria-label="'+name+' 크게 보기">';
+  }
+  var lightbox=document.getElementById("photoLightbox");
+  var previewStage=document.getElementById("lbStage");
+  var previewPhoto=document.getElementById("lbPhoto");
+  var previewClose=document.getElementById("lbClose");
+  var previewState={scale:1,x:0,y:0,baseW:0,baseH:0,priorOverflow:"",
+    priorFocus:null,dragged:false,blockClickUntil:0};
+  var previewPointers=new Map();
+
+  function previewConstrain(){
+    var maxX=Math.max(0,(previewState.baseW*previewState.scale-previewStage.clientWidth)/2);
+    var maxY=Math.max(0,(previewState.baseH*previewState.scale-previewStage.clientHeight)/2);
+    previewState.x=Math.max(-maxX,Math.min(maxX,previewState.x));
+    previewState.y=Math.max(-maxY,Math.min(maxY,previewState.y));
+  }
+  function previewDraw(){
+    previewPhoto.style.transform="translate(-50%, -50%) translate("+
+      previewState.x+"px, "+previewState.y+"px) scale("+previewState.scale+")";
+  }
+  function previewFit(reset){
+    if(lightbox.hidden || !previewPhoto.naturalWidth || !previewStage.clientWidth || !previewStage.clientHeight)return;
+    var factor=Math.min(previewStage.clientWidth/previewPhoto.naturalWidth,
+      previewStage.clientHeight/previewPhoto.naturalHeight);
+    previewState.baseW=previewPhoto.naturalWidth*factor;
+    previewState.baseH=previewPhoto.naturalHeight*factor;
+    previewPhoto.style.width=previewState.baseW+"px";
+    previewPhoto.style.height=previewState.baseH+"px";
+    if(reset){ previewState.scale=1;previewState.x=0;previewState.y=0; }
+    previewConstrain();
+    previewDraw();
+  }
+  function previewZoomAt(target, clientX, clientY){
+    if(lightbox.hidden || !previewState.baseW)return;
+    var next=Math.min(8,Math.max(1,target)), old=previewState.scale;
+    var box=previewStage.getBoundingClientRect();
+    var px=clientX-box.left-box.width/2, py=clientY-box.top-box.height/2;
+    var ratio=next/old;
+    previewState.x=px-(px-previewState.x)*ratio;
+    previewState.y=py-(py-previewState.y)*ratio;
+    previewState.scale=next;
+    previewConstrain();
+    previewDraw();
+  }
+  function openPhotoPreview(url, label){
+    if(!url)return;
+    if(lightbox.hidden){
+      previewState.priorOverflow=document.body.style.overflow;
+      previewState.priorFocus=document.activeElement;
+    }
+    previewPointers.clear();
+    previewState.baseW=0; previewState.baseH=0;
+    previewState.scale=1; previewState.x=0; previewState.y=0;
+    previewState.dragged=false; previewState.blockClickUntil=0;
+    previewPhoto.style.width="0px";previewPhoto.style.height="0px";
+    previewPhoto.alt=label||"확대한 사진";
+    previewPhoto.onload=function(){previewFit(true);};
+    previewPhoto.src=url;
+    lightbox.hidden=false;
+    document.body.style.overflow="hidden";
+    if(previewPhoto.complete && previewPhoto.naturalWidth)previewFit(true);
+    previewClose.focus({preventScroll:true});
+  }
+  function closePhotoPreview(){
+    if(lightbox.hidden)return;
+    lightbox.hidden=true;
+    previewPointers.clear();
+    previewStage.classList.remove("dragging");
+    previewPhoto.onload=null;
+    previewPhoto.removeAttribute("src");
+    document.body.style.overflow=previewState.priorOverflow;
+    if(previewState.priorFocus && previewState.priorFocus.isConnected &&
+       typeof previewState.priorFocus.focus==="function")
+      previewState.priorFocus.focus({preventScroll:true});
+  }
+
+  view.addEventListener("click",function(ev){
+    var el=ev.target && ev.target.closest ? ev.target.closest("img[data-preview],button[data-preview-url]") : null;
+    if(!el)return;
+    ev.preventDefault();ev.stopPropagation();
+    openPhotoPreview(el.dataset.preview||el.dataset.previewUrl,el.alt||el.getAttribute("aria-label"));
+  });
+  view.addEventListener("keydown",function(ev){
+    if(ev.key!=="Enter" && ev.key!==" ")return;
+    var el=ev.target;
+    if(!el.matches || !el.matches("img[data-preview]"))return;
+    ev.preventDefault();
+    openPhotoPreview(el.dataset.preview,el.alt);
+  });
+  previewClose.addEventListener("click",closePhotoPreview);
+  lightbox.addEventListener("click",function(ev){
+    if(ev.target===lightbox)closePhotoPreview();
+  });
+  previewStage.addEventListener("click",function(ev){
+    if(Date.now()<previewState.blockClickUntil)return;
+    if(ev.target===previewStage)closePhotoPreview();
+  });
+  window.addEventListener("keydown",function(ev){
+    if(lightbox.hidden)return;
+    if(ev.key==="Escape"){ev.preventDefault();closePhotoPreview();}
+    if(ev.key==="Tab"){ev.preventDefault();previewClose.focus();}
+  });
+  window.addEventListener("resize",function(){if(!lightbox.hidden)previewFit(false);});
+  previewStage.addEventListener("wheel",function(ev){
+    if(lightbox.hidden)return;
+    ev.preventDefault();
+    previewZoomAt(previewState.scale*Math.exp(-ev.deltaY*.002),ev.clientX,ev.clientY);
+  },{passive:false});
+  previewPhoto.addEventListener("dblclick",function(ev){
+    ev.preventDefault();
+    previewZoomAt(previewState.scale>1?1:2.5,ev.clientX,ev.clientY);
+  });
+  previewStage.addEventListener("pointerdown",function(ev){
+    if(ev.pointerType==="mouse" && ev.button!==0)return;
+    if(!previewPointers.size)previewState.dragged=false;
+    previewPointers.set(ev.pointerId,{x:ev.clientX,y:ev.clientY});
+    if(previewPointers.size>1)previewState.dragged=true;
+    var target=ev.target && ev.target.setPointerCapture ? ev.target : previewStage;
+    try{target.setPointerCapture(ev.pointerId);}catch(_){}
+  });
+  previewStage.addEventListener("pointermove",function(ev){
+    if(!previewPointers.has(ev.pointerId) || lightbox.hidden)return;
+    var before=Array.from(previewPointers.values());
+    var prev=previewPointers.get(ev.pointerId);
+    previewPointers.set(ev.pointerId,{x:ev.clientX,y:ev.clientY});
+    var after=Array.from(previewPointers.values());
+    if(Math.hypot(ev.clientX-prev.x,ev.clientY-prev.y)>1)previewState.dragged=true;
+    if(before.length>=2){
+      var oldDist=Math.hypot(before[0].x-before[1].x,before[0].y-before[1].y);
+      var newDist=Math.hypot(after[0].x-after[1].x,after[0].y-after[1].y);
+      var oldX=(before[0].x+before[1].x)/2,oldY=(before[0].y+before[1].y)/2;
+      var newX=(after[0].x+after[1].x)/2,newY=(after[0].y+after[1].y)/2;
+      if(oldDist>0)previewZoomAt(previewState.scale*newDist/oldDist,oldX,oldY);
+      previewState.x+=newX-oldX;
+      previewState.y+=newY-oldY;
+    }else{
+      previewState.x+=ev.clientX-prev.x;
+      previewState.y+=ev.clientY-prev.y;
+    }
+    previewConstrain();
+    previewDraw();
+    previewStage.classList.add("dragging");
+    ev.preventDefault();
+  });
+  function previewRelease(ev){
+    if(!previewPointers.has(ev.pointerId))return;
+    previewPointers.delete(ev.pointerId);
+    if(previewState.dragged)previewState.blockClickUntil=Date.now()+350;
+    if(!previewPointers.size)previewStage.classList.remove("dragging");
+  }
+  previewStage.addEventListener("pointerup",previewRelease);
+  previewStage.addEventListener("pointercancel",previewRelease);
 
   // ---------- 로그인 ----------
   function saveSession(s){
@@ -892,6 +1084,7 @@
        '같은 사진이 이어지면 줌이 연결돼요.</p>';
     h+='<div class="cut cover"><span class="cn">커버</span>'+
        '<span class="ct">'+esc(((current.cover||"").split("\n")[1]||"").trim()||"커버 문구")+'</span>'+
+       '<button type="button" class="cut-look" data-preview-url="'+esc(blobUrl(srcId(ph[ci])))+'" aria-label="커버 사진 크게 보기">🔍</button>'+
        '<button type="button" class="cpick" data-cut="-1">'+
        '<img src="'+blobUrl(srcId(ph[ci]))+'" alt=""><i>'+(ci+1)+'</i></button></div>';
     cuts.forEach(function(t,i){
@@ -899,6 +1092,7 @@
       h+='<div class="cut"><span class="cn">'+String(i+1).padStart(2,"0")+'</span>'+
          '<span class="ct">'+esc(t)+'<span class="hint" style="display:block">'+
          (current.cutTimeline[i].start).toFixed(2)+'–'+(current.cutTimeline[i].end).toFixed(2)+'초</span></span>'+
+         '<button type="button" class="cut-look" data-preview-url="'+esc(blobUrl(srcId(ph[pi])))+'" aria-label="'+(i+1)+'번 컷 사진 크게 보기">🔍</button>'+
          '<button type="button" class="cpick" data-cut="'+i+'">'+
          '<img src="'+blobUrl(srcId(ph[pi]))+'" alt=""><i>'+(pi+1)+'</i></button></div>';
     });
@@ -1432,10 +1626,11 @@
     var d=document.createElement("div");
     d.className="cstrip"; d.dataset.cut=String(cutIdx);
     d.innerHTML=ph.map(function(x,i){
-      return '<button type="button" data-pi="'+i+'"><img src="'+blobUrl(srcId(x))+'" alt=""><i>'+(i+1)+'</i></button>';
+      return '<div class="cstrip-item"><button type="button" data-pi="'+i+'"><img src="'+blobUrl(srcId(x))+'" alt=""><i>'+(i+1)+'</i></button>'+
+        '<button type="button" class="cstrip-look" data-preview-url="'+esc(blobUrl(srcId(x)))+'" aria-label="'+(i+1)+'번 사진 크게 보기">🔍</button></div>';
     }).join("");
     row.insertAdjacentElement("afterend", d);
-    Array.prototype.forEach.call(d.querySelectorAll("button"),function(b){
+    Array.prototype.forEach.call(d.querySelectorAll("button[data-pi]"),function(b){
       b.addEventListener("click",function(){
         var pi=+b.dataset.pi;
         if(cutIdx<0) current.coverPhoto=pi;
@@ -2269,7 +2464,7 @@
     if(thumbUrl) URL.revokeObjectURL(thumbUrl);
     thumbUrl=URL.createObjectURL(blob);
 
-    box.innerHTML='<div class="tprev"><img alt="썸네일" src="'+thumbUrl+'">'+
+    box.innerHTML='<div class="tprev">'+previewImg(thumbUrl,"완성 썸네일")+
       '<div class="sq"><b>그리드에 보이는 범위</b></div></div>'+
       '<p class="hint" style="text-align:center;margin-top:8px">'+
       VIDEO.w+'×'+VIDEO.h+' · '+(blob.size/1024).toFixed(0)+'KB</p>'+
@@ -2607,15 +2802,15 @@
       var e=ed[p.id], sp=peekSpec(current, p.id);
       h+='<div class="erow">'+
          '<div class="epair">'+
-           '<div class="eimg"><img src="'+blobUrl(p.id)+'" alt=""><i>'+(i+1)+'</i></div>'+
+           '<div class="eimg">'+previewImg(blobUrl(p.id),(i+1)+"번 원본")+'<i>'+(i+1)+'</i></div>'+
            '<span class="earrow">→</span>'+
-           '<div class="eimg'+(e?'':' empty')+'">'+(e?'<img src="'+blobUrl(e.id)+'" alt="">':'<span>아직 없음</span>')+'</div>'+
+           '<div class="eimg'+(e?'':' empty')+'">'+(e?previewImg(blobUrl(e.id),(i+1)+"번 가공 결과"):'<span>아직 없음</span>')+'</div>'+
          '</div>'+
          '<div class="eside">'+
            '<textarea data-eprompt="'+esc(p.id)+'" placeholder="'+(i+1)+'번 사진을 어떻게 바꿀지 적어주세요">'+esc(sp.prompt)+'</textarea>'+
            '<div class="erefs">';
       sp.refs.forEach(function(r,j){
-        h+='<div class="eref"><img src="'+blobUrl(r.id)+'" alt="">'+
+        h+='<div class="eref">'+previewImg(blobUrl(r.id),(i+1)+"번 사진의 "+(j+1)+"번 레퍼런스")+
            '<button type="button" data-erefdel="'+i+':'+j+'" aria-label="레퍼런스 지우기"'+dis+'>×</button></div>';
       });
       if(sp.refs.length<EDIT.maxRefs){
@@ -2793,7 +2988,7 @@
       h+='<div class="grid">';
       list.forEach(function(it,i){
         h+='<div class="thumb"><span class="n">'+(i+1)+'</span>'+
-           '<img src="'+blobUrl(it.id)+'" alt="">'+
+           previewImg(blobUrl(it.id),(i+1)+"번 사진")+
            '<div class="ops">'+
            '<button data-mv="-1" data-kind="'+kind+'" data-i="'+i+'">←</button>'+
            '<button data-mv="1" data-kind="'+kind+'" data-i="'+i+'">→</button>'+
