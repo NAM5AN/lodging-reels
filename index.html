@@ -879,10 +879,23 @@
   }
   // Eleven v4 accepts creative English voice directions, including comma-combined
   // instructions such as [whispering, playful]. Korean/malformed tags must not be sent to TTS.
+  // Do not send the excluded gentle tone to ElevenLabs, even if an AI emits it.
+  // Keep non-gentle parts of a composite tag and preserve spoken narration exactly.
+  function removeGentleAudioTags(value){
+    return String(value||"").replace(/\[([^\[\]\r\n]{1,200})\]/g,function(full,label){
+      if(!/\bgentl(?:e(?:r|st|ness)?|y)\b/i.test(label)) return full;
+      var parts=label.split(",").map(function(p){return p.trim()}).filter(function(p){
+        return p && !/\bgentl(?:e(?:r|st|ness)?|y)\b/i.test(p);
+      });
+      return parts.length ? "["+parts.join(", ")+"]" : "";
+    }).replace(/\s{2,}/g," ").trim();
+  }
   function ttsTagLanguageError(value){
     var text=String(value||"");
     var tags=text.match(/\[[^\[\]\r\n]{1,200}\]/g)||[];
     var malformed=/[\[\]]/.test(text.replace(/\[[^\[\]\r\n]{1,200}\]/g,""));
+    if(tags.some(function(tag){return /\bgentl(?:e(?:r|st|ness)?|y)\b/i.test(tag)}))
+      return "gentle 계열 태그는 사용하지 않아요. ④ 태그 다시 만들기를 눌러주세요.";
     var invalid=tags.some(function(tag){
       return !/^\[[A-Za-z][A-Za-z0-9 ,'-]{0,119}\]$/.test(tag);
     });
@@ -912,7 +925,7 @@
     return '<div class="trk">'+
       '<div class="trkhead"><b>TTS 표현 태그</b>'+
       '<span class="trkname">Claude Opus 5.5 · ElevenLabs 방식 참고</span></div>'+
-      '<p class="hint" style="margin-top:0">원본 자막 전체를 한 편의 나레이션으로 읽고 쉼표·마침표·물음표·느낌표·말줄임표를 호흡과 의미에 맞춰 자동으로 정리해요. [surprised]·[whispering, playful] 등 감정 태그는 영어로만 넣으며, 원래 단어·숫자는 바꾸지 않아요.</p>'+
+      '<p class="hint" style="margin-top:0">원본 자막 전체를 한 편의 나레이션으로 읽고 쉼표·마침표·물음표·느낌표·말줄임표를 호흡과 의미에 맞춰 자동으로 정리해요. [surprised]·[whispering, playful] 등 감정 태그는 영어로만 넣으며, 원래 단어·숫자는 바꾸지 않아요. [gentle] 계열 태그는 자동 제외해요.</p>'+
       '<button type="button" class="primary" id="mktags" style="width:100%;margin-top:8px">'+label+'</button>'+
       '<label for="f_ttsTagged" style="margin-top:12px">태그 적용 대본 <span>직접 태그 수정 가능</span></label>'+
       '<textarea id="f_ttsTagged" style="min-height:150px" placeholder="먼저 AI 오토태그를 넣어주세요">'+esc(tagged)+'</textarea>'+
@@ -966,6 +979,9 @@
       }
       var tagged=String(result&&result.text||"").trim();
       if(!tagged){ st("오토태그 결과가 비어 있어요. 다시 시도해주세요.",true); return; }
+      var beforeExclusion=tagged;
+      tagged=removeGentleAudioTags(tagged);
+      var gentleExcluded=beforeExclusion!==tagged;
       var issue=ttsTagLanguageError(tagged);
       if(issue){ st(issue,true); return; }
       if(canonicalTtsSpeech(tagged)!==canonicalTtsSpeech(source)){
@@ -985,7 +1001,8 @@
       if(tagStat){
         tagStat.className="status"+(saved?"":" bad");
         tagStat.textContent=saved
-          ? "영어 Audio Tag를 적용하고 저장했어요. 한국어 원문·숫자 보존 확인 완료. ⑤ TTS를 생성할 수 있어요."
+          ? (gentleExcluded ? "gentle 계열 태그를 제외하고 저장했어요. 한국어 원문·숫자 보존 확인 완료. ⑤ TTS 생성 가능."
+              : "영어 Audio Tag를 적용하고 저장했어요. 한국어 원문·숫자 보존 확인 완료. ⑤ TTS를 생성할 수 있어요.")
           : "오토태그를 생성했지만 프로젝트 저장에 실패했어요. 저장 상태를 확인해주세요.";
       }
     }catch(e){
