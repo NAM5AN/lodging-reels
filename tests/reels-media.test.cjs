@@ -11,8 +11,8 @@ const media = global.ReelsMedia;
 
 test("speed and pitch are independent values",()=>{
   assert.equal(media.SPEED,1.2);
-  assert.equal(media.PITCH_SEMITONES,0.2);
-  assert.ok(media.VERSION.includes("speed1.2-pitch0.2"));
+  assert.equal(media.PITCH_SEMITONES,1);
+  assert.ok(media.VERSION.includes("speed1.2-pitch1"));
 });
 
 test("timestamp alignment ignores tags but preserves caption characters",()=>{
