@@ -151,7 +151,7 @@ test("TTS synthesis refuses legacy Korean Audio Tags before making any API call"
 });
 
 test("natural punctuation is preserved across subtitle cuts without altering Korean words",async()=>{
-  const input="짐 풀기도 전에\\n수영복부터 꺼낸 이유\\n야외 풀은 보통 여름 한철 뿐인데\\n여긴 사계절 온수풀";
+  const input=["짐 풀기도 전에","수영복부터 꺼낸 이유","야외 풀은 보통 여름 한철 뿐인데","여긴 사계절 온수풀"].join(String.fromCharCode(10));
   const output="[excited] 짐 풀기도 전에, 수영복부터 꺼낸 이유? [surprised] 야외 풀은 보통 여름 한철 뿐인데... 여긴 사계절 온수풀!";
   const env=setup({ok:true,body:{text:output,integrity:true,english_tags:true}});
   env.state.script=input;
