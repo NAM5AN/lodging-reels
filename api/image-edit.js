@@ -1,6 +1,6 @@
 "use strict";
 // ⑨ 이미지 가공 — 숙소 사진을 기본으로, 추가 레퍼런스와 프롬프트로
-// GPT Image 2.5 Sunburst 가 영상용 세로 이미지를 만든다.
+// GPT Image 2.5 Sunburst 가 원본 사진 비율을 유지한 이미지를 만든다.
 //
 // 왜 Supabase Edge Function 이 아니라 Vercel 함수인가:
 //   Vercel 함수는 OIDC 토큰으로 AI Gateway 에 키 없이 붙는다.
@@ -18,9 +18,9 @@ const BUCKET = "lodging-reels";
 const GATEWAY_EDITS = "https://ai-gateway.vercel.sh/v1/images/edits";
 const MODEL = "openai/gpt-image-2.5-sunburst";
 
-// 영상은 1080x1920 이다. OpenAI 는 가로·세로가 16의 배수여야 해서 1080 을 못 받는다.
-// 1088x1920 으로 받아 브라우저에서 좌우 4px 씩 잘라 정확히 1080x1920 을 만든다.
-const SIZE = "1088x1920";
+// 요청 크기는 원본 사진 비율에 가까운 16의 배수로 맞춘다.
+// 긴 변은 최대 1920픽셀로 제한하고, 결과 비율은 브라우저에서 다시 확인한다.
+const MAX_EDGE = 1920;
 const QUALITIES = ["low", "medium", "high", "xhigh", "max"];
 const MAX_REFS = 15;           // GPT image 모델은 입력 16장까지. 1장은 기본 사진.
 const MAX_PROMPT = 32000;
@@ -67,7 +67,20 @@ function validate(body, uid) {
   if (!prompt) return { error: "empty_prompt", message: "프롬프트가 비었어요." };
   if (prompt.length > MAX_PROMPT) return { error: "too_long", message: "프롬프트가 너무 길어요." };
   const quality = QUALITIES.indexOf(body.quality) >= 0 ? body.quality : "high";
-  return { base: base, refs: refs, prompt: prompt, quality: quality };
+  const dim = function(n){ n=Number(n);return Number.isFinite(n)&&n>0&&n<=16384?Math.round(n):0; };
+  const baseW=dim(body.baseW),baseH=dim(body.baseH);
+  return { base: base, refs: refs, prompt: prompt, quality: quality, baseW:baseW, baseH:baseH };
+}
+
+function round16(n){return Math.max(16,Math.round(n/16)*16);}
+function sizeForAspect(w,h){
+  if(!(w>0 && h>0))return null;
+  if(w>=h){
+    const outW=round16(Math.min(w,MAX_EDGE));
+    return outW+"x"+round16(outW*h/w);
+  }
+  const outH=round16(Math.min(h,MAX_EDGE));
+  return round16(outH*w/h)+"x"+outH;
 }
 
 // 기본 사진이 반드시 첫 번째다. 프롬프트의 'Image 1' 이 이걸 가리킨다.
@@ -77,7 +90,8 @@ function buildPayload(v, minimal) {
   );
   const payload = { model: MODEL, prompt: v.prompt, images: images, n: 1 };
   if (!minimal) {
-    payload.size = SIZE;
+    const size=sizeForAspect(v.baseW,v.baseH);
+    if(size)payload.size=size;
     payload.quality = v.quality;
     payload.output_format = "jpeg";
     payload.output_compression = 90;
@@ -232,7 +246,7 @@ async function handler(req, res) {
     mime: sniffMime(img.b64),
     model: MODEL,
     quality: minimal ? null : v.quality,
-    requested_size: minimal ? null : SIZE,
+    requested_size: minimal ? null : sizeForAspect(v.baseW,v.baseH),
     minimal: minimal,
     ms: Date.now() - t0,
   });
@@ -241,6 +255,7 @@ async function handler(req, res) {
 module.exports = handler;
 module.exports._lib = {
   checkPath: checkPath, publicUrl: publicUrl, validate: validate, buildPayload: buildPayload,
+  sizeForAspect: sizeForAspect, round16: round16,
   pickImage: pickImage, sniffMime: sniffMime, looksLikeParamError: looksLikeParamError,
-  MODEL: MODEL, SIZE: SIZE, MAX_REFS: MAX_REFS,
+  MODEL: MODEL, MAX_EDGE: MAX_EDGE, MAX_REFS: MAX_REFS,
 };

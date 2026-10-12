@@ -131,7 +131,7 @@
   .epair{display:flex; align-items:center; gap:6px; flex:0 0 auto}
   .eimg{position:relative; width:72px; aspect-ratio:9/16; border-radius:8px; overflow:hidden;
     border:1px solid var(--line); background:var(--field); display:flex; align-items:center; justify-content:center}
-  .eimg img{width:100%; height:100%; object-fit:cover; display:block}
+  .eimg img{width:100%; height:100%; object-fit:contain; display:block}
   .eimg.empty span{font-size:11px; color:var(--mute); text-align:center; padding:0 4px; word-break:keep-all}
   .eimg i{position:absolute; left:2px; top:2px; font-style:normal; font-size:10px;
     font-weight:700; color:#fff; background:rgba(0,0,0,.7); border-radius:4px; padding:0 4px}
@@ -2686,14 +2686,14 @@
   // ---------- 편집 ----------
   // ---------- ⑨ 이미지 가공 ----------
   // ⑧ 사진 한 장 한 장에 그 사진만의 프롬프트와 레퍼런스를 붙여 GPT Image 2.5 Sunburst 로
-  // 1080x1920 세로 이미지를 만든다. 공통 프롬프트나 공통 레퍼런스는 없다.
+  // 원본 사진의 가로세로 비율로 생성한다. 공통 프롬프트나 공통 레퍼런스는 없다.
   // 결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에서 결과로 바뀐다. 결과를 지우면 원본으로 돌아간다.
   //
   // 저장 구조
   //   current.editSpecs[사진id] = { prompt:"...", refs:[{id,w,h,size}] }   ← 사진별 입력
   //   current.edits[사진id]     = { id, w, h, ... }                        ← 사진별 결과
   var EDIT = {
-    w:1080, h:1920, maxRefs:15,
+    maxRefs:15,
     qualities:[["medium","보통 · 빠름"],["high","높음 · 기본"],["xhigh","아주 높음 · 느림"],["max","최고 · 가장 느림"]]
   };
   var editBusy=false, editTimer=null;
@@ -2733,7 +2733,7 @@
             " do not add rooms or facilities that are not in it.";
       if(refCount) head+=" Use the references for style, mood, lighting or props, not for the place itself.";
     }
-    return head+" Output one vertical 9:16 frame for a short-form video.";
+    return head+" Preserve the full original framing, orientation and aspect ratio (width to height) of Image 1. Do not crop, stretch, pad or reframe it to another aspect ratio.";
   }
 
   // 모델에 보내는 최종 프롬프트.
@@ -2746,8 +2746,11 @@
   function editRequest(proj, pid){
     var sp=peekSpec(proj, pid);
     if(!sp.prompt.trim()) return null;
+    var photo=(proj.photos||[]).find(function(x){ return x.id===pid; }) || {};
     return {
       base: pid,
+      baseW: photo.w||0,
+      baseH: photo.h||0,
       refs: sp.refs.map(function(r){ return r.id; }),
       prompt: editPromptText(proj, pid),
       quality: proj.editQuality||"high"
@@ -2773,8 +2776,8 @@
     var ph=current.photos||[], ed=current.edits||{};
     var h='<h2>⑨ 이미지 가공</h2><div class="card">';
     h+='<p class="hint" style="margin:0 0 10px">사진마다 프롬프트와 레퍼런스를 따로 넣어 '+
-       'GPT Image 2.5 Sunburst 로 1080×1920 세로 이미지를 만들어요. 프롬프트를 적은 사진만 만들어져요. '+
-       '결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에 결과로 들어가고, 결과를 지우면 원본으로 돌아가요.</p>';
+       'GPT Image 2.5 Sunburst 로 원본 사진 비율을 유지한 이미지를 만들어요. 프롬프트를 적은 사진만 만들어져요. '+
+       '결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에 들어가고, 결과를 지우면 원본으로 돌아가요. ⑪ 릴스 영상 출력 규격은 기존 9:16 그대로예요.</p>';
     if(!ph.length) return h+'<p class="hint">⑧ 사진을 먼저 올려주세요.</p></div>';
 
     h+='<label class="chk" style="margin-top:0"><input type="checkbox" id="f_editKeepReal"'+(current.editKeepReal===false?'':' checked')+
@@ -2844,23 +2847,31 @@
     return new Blob([u], {type:mime||"image/jpeg"});
   }
 
-  // 받은 이미지를 정확히 1080x1920 으로. 1088x1920 이 오면 좌우 4px 만 잘린다.
-  // 다른 비율이 오면(크기 옵션을 Gateway 가 무시한 경우) 가운데를 잘라 맞추고 그 사실을 남긴다.
-  function fitVertical(blob){
+  // 생성 결과를 원본 사진 비율로 저장한다. 16의 배수 반올림 차이도 보정한다.
+  // 모델이 다른 비율을 반환하면 원본 비율에 맞춰 최소한만 중앙 크롭하고 알림을 남긴다.
+  function fitOriginalAspect(blob, targetW, targetH){
     return new Promise(function(res,rej){
       var u=URL.createObjectURL(blob), img=new Image();
       img.onload=function(){
-        var sw=img.naturalWidth, sh=img.naturalHeight, W=EDIT.w, H=EDIT.h;
-        var s=Math.max(W/sw, H/sh), cw=W/s, ch=H/s;
-        var c=document.createElement("canvas"); c.width=W; c.height=H;
-        var g=c.getContext("2d"); g.imageSmoothingQuality="high";
-        g.drawImage(img, (sw-cw)/2, (sh-ch)/2, cw, ch, 0, 0, W, H);
+        var sw=img.naturalWidth, sh=img.naturalHeight;
+        var ratio=(targetW>0 && targetH>0) ? targetW/targetH : sw/sh;
+        var cw=sw, ch=sh, sx=0, sy=0;
+        if(sw/sh>ratio){
+          cw=sh*ratio; sx=(sw-cw)/2;
+        }else{
+          ch=sw/ratio; sy=(sh-ch)/2;
+        }
+        var W=Math.max(1,Math.round(cw)), H=Math.max(1,Math.round(ch));
+        var c=document.createElement("canvas");c.width=W;c.height=H;
+        var g=c.getContext("2d");g.imageSmoothingQuality="high";
+        g.drawImage(img,sx,sy,cw,ch,0,0,W,H);
         URL.revokeObjectURL(u);
-        var note = Math.abs(sw/sh - W/H) > 0.02 ? ("받은 크기 "+sw+"×"+sh+" 를 9:16 으로 잘라 맞췄어요") : "";
-        c.toBlob(function(b){ b ? res({blob:b, srcW:sw, srcH:sh, note:note}) : rej(new Error("변환 실패")); },
-                 "image/jpeg", 0.92);
+        var note=Math.abs(sw/sh-ratio)>0.02 ?
+          ("생성 결과 "+sw+"×"+sh+" 를 원본 사진 비율에 맞춰 잘랐어요"):"";
+        c.toBlob(function(b){b?res({blob:b,w:W,h:H,srcW:sw,srcH:sh,note:note}):rej(new Error("변환 실패"));},
+                 "image/jpeg",0.92);
       };
-      img.onerror=function(){ URL.revokeObjectURL(u); rej(new Error("결과 이미지를 못 읽었어요")); };
+      img.onerror=function(){URL.revokeObjectURL(u);rej(new Error("결과 이미지를 못 읽었어요"));};
       img.src=u;
     });
   }
@@ -2870,6 +2881,11 @@
     if(idx<0) throw new Error("사진이 없어요");
     var body=editRequest(proj, photoId);
     if(!body) throw new Error((idx+1)+"번 사진 프롬프트가 비었어요");
+    // 이전 프로젝트에 사진 크기 메타데이터가 없을 때도 원본에서 읽어 온다.
+    if(!(body.baseW>0 && body.baseH>0)){
+      var original=await loadImg(blobUrl(photoId));
+      body.baseW=original.naturalWidth;body.baseH=original.naturalHeight;
+    }
     var r=await api(FN.image,{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
     var t=await r.text(), j=null;
     try{ j=JSON.parse(t); }catch(e){}
@@ -2879,12 +2895,12 @@
       else if(r.status===504 && !j) msg="시간 초과로 끊겼어요. 품질을 한 단계 낮춰 다시 해보세요.";
       throw new Error(msg);
     }
-    var fit=await fitVertical(b64ToBlob(j.b64, j.mime));
+    var fit=await fitOriginalAspect(b64ToBlob(j.b64, j.mime),body.baseW,body.baseH);
     var up=await storeUpload(newPath(proj.id, "edited", "jpg"), fit.blob, "image/jpeg");
     proj.edits=proj.edits||{};
     var old=proj.edits[photoId];
     proj.edits[photoId]={
-      id:up.id, w:EDIT.w, h:EDIT.h, size:up.sizeBytes, srcW:fit.srcW, srcH:fit.srcH,
+      id:up.id, w:fit.w, h:fit.h, size:up.sizeBytes, srcW:fit.srcW, srcH:fit.srcH,
       quality:j.quality||body.quality, refs:body.refs.length, at:Date.now(),
       note: fit.note || (j.minimal ? "크기·품질 옵션 없이 만들어졌어요" : "")
     };
