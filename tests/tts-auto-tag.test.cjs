@@ -169,3 +169,49 @@ test("the UI explains automatic contextual punctuation and preserved words",()=>
   assert.ok(html.includes("호흡과 의미에 맞춰 자동으로 정리해요"));
   assert.ok(html.includes("원래 단어·숫자는 바꾸지 않아요"));
 });
+
+test("gentle tones are excluded from standalone and composite English tags",()=>{
+  const env=setup();
+  const input="[gentle] 가격부터 봤는데 [warm, gentle] 객실값이 잘못됐어요";
+  const output=env.ctx.removeGentleAudioTags(input);
+  assert.equal(output,"가격부터 봤는데 [warm] 객실값이 잘못됐어요");
+  assert.equal(env.ctx.canonicalTtsSpeech(output),env.ctx.canonicalTtsSpeech(input));
+  assert.equal(env.ctx.removeGentleAudioTags("[Gentle, curious] 좋아요"),"[curious] 좋아요");
+  assert.equal(env.ctx.removeGentleAudioTags("[speaking gently] 좋아요"),"좋아요");
+  assert.equal(env.ctx.removeGentleAudioTags("[curious] 좋아요"),"[curious] 좋아요");
+});
+
+test("AI generated gentle tone is automatically removed before save",async()=>{
+  const env=setup({ok:true,body:{
+    text:"[gentle] 가격부터 봤는데 [warm, gentle] 객실값이 잘못됐어요",
+    integrity:true
+  }});
+  await env.ctx.makeTtsTags();
+  assert.equal(env.saved,1);
+  assert.equal(env.state.ttsTagged,"가격부터 봤는데 [warm] 객실값이 잘못됐어요");
+  assert.match(env.stat.textContent,/gentle 계열 태그를 제외/);
+  assert.equal(env.ctx.tagsMatchScript(),true);
+});
+
+test("manual or stored gentle tags are rejected even if spoken text is unchanged",()=>{
+  const env=setup();
+  env.state.ttsTagSource=env.state.script;
+  env.state.ttsTagged="[warm, gentle] 가격부터 봤는데 객실값이 잘못됐어요";
+  assert.match(env.ctx.ttsTagLanguageError(env.state.ttsTagged),/gentle/);
+  assert.equal(env.ctx.tagsMatchScript(),false);
+  env.state.ttsTagged="[curious] 가격부터 봤는데 객실값이 잘못됐어요";
+  assert.equal(env.ctx.tagsMatchScript(),true);
+});
+
+test("TTS must not run for a legacy gentle tag",async()=>{
+  const env=setup();
+  env.state.ttsTagged="[gentle] 가격부터 봤는데 객실값이 잘못됐어요";
+  env.state.ttsTagSource=env.state.script;
+  const vdstat={textContent:"",className:"status"};
+  env.ctx.document.getElementById=id=>id==="vdstat"?vdstat:null;
+  vm.runInNewContext(section("  async function makeTTS(){","  async function makeAudioProcessed(){"),env.ctx);
+  await env.ctx.makeTTS();
+  assert.equal(env.calls.length,0);
+  assert.match(vdstat.textContent,/gentle/);
+  assert.match(vdstat.className,/bad/);
+});
