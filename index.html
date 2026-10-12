@@ -2784,40 +2784,65 @@
   }
 
   // ---------- 폰트 ----------
-  // 라이선스 폰트라 저장소에 넣지 않고 사용자의 Storage 에 한 번만 올린다.
-  var FONTS=[{k:"body", h:"본문(자막)용", face:"ReelBody"},
-             {k:"cover", h:"썸네일 제목용", face:"ReelCover"}];
-  var fontsReady={};
+  // 영상 출력에 사용할 기본 웹폰트. 원본 TTF는 공개 저장소에 재배포하지 않는다.
+  // 계정에서 직접 업로드한 폰트가 있다면 그 파일을 우선 사용한다.
+  var FONTS=[
+    {k:"body", h:"본문(자막)용", face:"ReelBody", label:"온글잎 콘콘체",
+     url:"https://cdn.jsdelivr.net/gh/projectnoonnu/2412-1@1.0/Ownglyph_corncorn-Rg.woff2"},
+    {k:"cover", h:"썸네일 제목용", face:"ReelCover", label:"학교안심 어항꾸미기 B",
+     url:"https://cdn.jsdelivr.net/gh/fonts-archive/HakgyoansimEohangkkumigiB/Hakgyoansim_EohangkkumigiB.woff2"}
+  ];
+  var fontsReady={}, fontSource={}, loadedFontFaces={};
 
   function fontPath(k){ return uid+"/_fonts/"+k+".ttf"; }
 
+  async function registerFont(f, url, format){
+    var descriptor='url("'+url+'")'+(format?' format("'+format+'")':"");
+    var fx=new FontFace(f.face,descriptor);
+    await fx.load();
+    if(loadedFontFaces[f.k]) document.fonts.delete(loadedFontFaces[f.k]);
+    document.fonts.add(fx);
+    loadedFontFaces[f.k]=fx;
+  }
+
   async function checkFonts(){
-    fontsReady={};
-    if(!uid) return;
+    fontsReady={}; fontSource={};
     await Promise.all(FONTS.map(async function(f){
+      // 숙소 계정에서 이전에 올려 둔 개인 폰트가 있다면 기존 선택을 존중한다.
+      if(uid){
+        try{
+          var path=fontPath(f.k);
+          var r=await fetch(blobUrl(path),{method:"HEAD",cache:"no-store"});
+          if(r.ok){
+            // 업로드를 다시 했을 때 이전 캐시 글꼴이 유지되지 않게 한다.
+            await registerFont(f,blobUrl(path)+"?v="+Date.now());
+            fontsReady[f.k]=true; fontSource[f.k]="custom";
+            return;
+          }
+        }catch(e){}
+      }
+      // 업로드 없이도 PC와 휴대폰에서 동일한 영상/썸네일 폰트를 쓴다.
       try{
-        var r=await fetch(blobUrl(fontPath(f.k)), {method:"HEAD", cache:"no-store"});
-        if(r.ok){
-          fontsReady[f.k]=true;
-          var fx=new FontFace(f.face, 'url("'+blobUrl(fontPath(f.k))+'")');
-          await fx.load();
-          document.fonts.add(fx);
-        }
-      }catch(e){}
+        await registerFont(f,f.url,"woff2");
+        fontsReady[f.k]=true; fontSource[f.k]="default";
+      }catch(e){
+        console.warn("기본 영상 폰트 불러오기 실패:",f.label,e&&e.message||e);
+      }
     }));
   }
 
   function fontSection(){
-    var missing=FONTS.filter(function(f){ return !fontsReady[f.k] });
-    if(!missing.length) return "";
-    return '<h2>폰트</h2><div class="card">'+
-      '<p class="hint" style="margin:0 0 10px">영상에 쓸 글꼴을 한 번만 올려두면 계속 쓰여요. '+
-      '안 올리면 기본 글꼴로 나옵니다.</p>'+
+    return '<h2>영상 폰트</h2><div class="card">'+
+      '<p class="hint" style="margin:0 0 10px">썸네일과 컷 자막에 아래 글꼴이 자동 적용돼요. '+
+      '직접 올린 폰트가 있으면 그 폰트를 우선 사용합니다.</p>'+
       FONTS.map(function(f){
+        var ready=!!fontsReady[f.k], custom=fontSource[f.k]==="custom";
+        var status=ready ? (custom?"사용자 폰트 적용 중":"기본 적용: "+f.label)
+                         : "웹폰트 로딩 실패 · 시스템 글꼴로 대체";
         return '<div class="trk"><div class="trkhead"><b>'+esc(f.h)+'</b>'+
-          '<span class="trkname">'+(fontsReady[f.k]?"올려둠":"없음")+'</span></div>'+
+          '<span class="trkname">'+esc(status)+'</span></div>'+
           '<button type="button" class="pickbtn" data-font="'+f.k+'" style="padding:10px">'+
-          (fontsReady[f.k]?"다른 파일로 바꾸기":"ttf 파일 고르기")+'</button>'+
+          '다른 폰트 직접 올리기</button>'+
           '<input class="sr" type="file" accept=".ttf,.otf,font/*" id="fnt_'+f.k+'" data-font="'+f.k+'">'+
           '</div>';
       }).join("")+
@@ -2834,7 +2859,7 @@
       await storeUpload(fontPath(k), file, "font/ttf");
       await checkFonts();
       renderList();
-      toast("폰트를 올렸어요");
+      toast("폰트를 적용했어요");
     }catch(e){ st("올리지 못했어요: "+String((e&&e.message)||"").slice(0,80), true); }
   }
 
