@@ -815,6 +815,7 @@
         '<select id="f_lines" style="width:110px">'+opts+'</select>'+
         '<button type="button" id="mkscript" style="flex:1">대본 만들기</button>'+
       '</div>'+
+      '<p class="hint">대본 생성·수정: Claude Opus 5.5 · 캡처 정보 추출: Claude Sonnet 5</p>'+
       '<p class="status'+(st.bad?' bad':'')+'" id="scstat">'+esc(st.text)+'</p>'+
       '<label for="f_cover">커버 문구 <span>1줄째 = 윗줄(작게) · 2줄째 = 아랫줄(크게)</span></label>'+
       '<textarea id="f_cover" style="min-height:64px" placeholder="아무리 봐도&#10;가격이 잘못됐어요">'+esc(cv)+'</textarea>'+
@@ -1783,11 +1784,15 @@
   function sleep(ms){ return new Promise(function(r){ setTimeout(r,ms) }); }
 
   // 키는 Edge Function 안에 있다. 브라우저는 토큰만 들고 간다.
-  async function askOnce(prompt){
+  async function askOnce(prompt, purpose, repairIndices){
+    // Backend pins script, repair, and extension to Opus 5.5. OCR stays on Sonnet 5.
+    var request={prompt:prompt,json:true,max_tokens:purpose?6000:3000};
+    if(purpose)request.purpose=purpose;
+    if(purpose==="script_repair")request.repair_indices=repairIndices||[];
     var r=await api(FN.ai,{
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({prompt:prompt, json:true, max_tokens:3000})
+      body:JSON.stringify(request)
     });
     var t=await r.text();
     if(!r.ok){
@@ -1807,18 +1812,19 @@
   }
 
   // upstream_error 는 규칙 문제가 아니라 호출이 끊긴 것이다. 몇 번은 그냥 다시 걸면 된다.
-  async function askJSON(prompt, tries, onTry){
+  async function askJSON(prompt, tries, onTry, purpose, repairIndices){
     var last=null;
     for(var i=0;i<tries;i++){
       if(onTry && i) onTry(i+1, tries);
       try{
-        var r=await askOnce(prompt);
+        var r=await askOnce(prompt, purpose, repairIndices);
         if(r) return r;
         last=new Error("empty");
       }catch(e){
         last=e;
         var c=(e&&e.code)||"";
-        if(c==="unauthorized" || c==="no_key" || c==="bad_key") throw e;  // 다시 걸어도 소용없다
+        if(c==="unauthorized" || c==="no_key" || c==="bad_key" || c==="bad_model"
+           || c==="bad_repair_indices" || c==="bad_purpose") throw e;  // 다시 걸어도 해결되지 않는 설정 오류
       }
       await sleep(800*(i+1));
     }
@@ -1859,7 +1865,8 @@
       "- 고치라고 한 줄만 주세요. 나머지는 건드리지 마세요.\n\n"+
       "JSON 하나만 답하세요. 키는 줄 번호(1부터)예요.\n"+
       '{"fixed":{"'+(list[0].i+1)+'":"고친 줄", ...}}';
-    var got=await askJSON(prompt, 2);
+    var got=await askJSON(prompt, 2, null, "script_repair",
+      list.map(function(o){return o.i+1;}));
     var fx=got && got.fixed;
     if(!fx) return 0;
     var n=0;
@@ -1885,7 +1892,7 @@
       "- 마지막 3~4줄은 댓글 유도로 끝나야 해요. 키워드는 \""+((current.keyword||"").trim()||"특가")+"\".\n"+
       "- 숙소명·브랜드명·원 단위 금액은 쓰지 마세요.\n\n"+
       'JSON 하나만: {"more":["...", ... '+need+'개]}';
-    var got=await askJSON(prompt, 2);
+    var got=await askJSON(prompt, 2, null, "script_extend");
     var more=got && [].concat(got.more||[]).map(function(x){return String(x).trim()}).filter(Boolean);
     if(!more || !more.length) return 0;
     more.slice(0,need).forEach(function(t){ lines.push(t); });
@@ -1905,7 +1912,7 @@
     try{
       got=await askJSON(scriptPrompt(), 3, function(i,n){
         st("같은 원본 프롬프트로 다시 시도 중 "+i+"/"+n+"...");
-      });
+      }, "script");
     }catch(e){
       why=(e&&e.code)||(e&&e.message)||"";
       if(why==="unauthorized"){ st("로그인이 풀렸어요. 새로고침해주세요.",true); return; }
