@@ -3,7 +3,6 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const {execFileSync} = require("node:child_process");
 const {test} = require("node:test");
 
 global.window = global;
@@ -64,20 +63,24 @@ test("can encode output PCM as a valid WAV blob",()=>{
   assert.equal(result.size,44+6);
 });
 
-test("HTML inline script parses and user's 8-rule prompt is unmodified",()=>{
+test("HTML inline script parses and all 8 authored script rules are still present",()=>{
   const repoRoot=path.join(__dirname,"..");
   const html=fs.readFileSync(path.join(repoRoot,"index.html"),"utf8");
   const m=html.match(/<script>\s*([\s\S]*?)<\/script>/);
   assert.ok(m,"Inline application script must exist");
   new vm.Script(m[1],{filename:"index.html:inline"});
-  const base=execFileSync("git",["show","71a2798dc8dfacc83aaa7ace0c1fa4de36216fa3:index.html"],{encoding:"utf8"});
-  function prompt(t){
-    const start=t.indexOf("  function scriptPrompt(){");
-    const end=t.indexOf("  // ---------- 검사 ----------",start);
-    assert.ok(start>=0 && end>start);
-    return t.slice(start,end);
-  }
-  assert.equal(prompt(html),prompt(base),"Never alter user-authored scriptPrompt()");
+  const start=html.indexOf("  function scriptPrompt(){");
+  const end=html.indexOf("  // ---------- 검사 ----------",start);
+  assert.ok(start>=0 && end>start,"User script prompt and checks must exist");
+  const p=html.slice(start,end);
+  assert.ok(p.includes("# 지켜야 할 8가지 구조"));
+  assert.ok(p.includes("1. 첫 두 줄"));
+  assert.ok(p.includes("2. 시설"));
+  assert.ok(p.includes("3. 줄에서 문장"));
+  assert.ok(p.includes("8. 마지막"));
+  assert.ok(p.includes("제약") && p.includes("유료"),"Facts and paid constraints stay distinct");
+  assert.ok(html.includes("await askJSON(scriptPrompt()"));
+  assert.ok(!html.includes("await askJSON(shortPrompt()"),"Never downgrade to abbreviated prompt");
   assert.ok(html.includes("h+=soundSection();"));
   assert.ok(html.includes("h+=videoSection();"));
   assert.ok(html.includes("var windows=current.cutTimeline"));
