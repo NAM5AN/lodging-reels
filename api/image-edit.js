@@ -1,31 +1,33 @@
 "use strict";
-// ⑨ Generate 실험 — 이미지 입력 없이 텍스트 프롬프트로 새 장면을 생성한다.
-// 기존 원본/레퍼런스 이미지는 AI에 전송하지 않으며 원본 가로세로 비율만 활용한다.
+// ⑨ Sunburst 이미지 생성: Vercel AI SDK generateImage()에 원본 1장 + 사진별 레퍼런스를 이미지 입력으로 전달한다.
+// 기존 Vercel 함수/스토리지/인증/프론트 결과 형식은 그대로 사용한다.
 //
 // 왜 Supabase Edge Function 이 아니라 Vercel 함수인가:
 //   Vercel 함수는 OIDC 토큰으로 AI Gateway 에 키 없이 붙는다.
 //   Edge Function 은 AI_GATEWAY_API_KEY 를 따로 넣어야 하는데, 지금 그 키가 없다
 //   (lodging-reels-ai 로그가 전부 anthropic-direct). 키를 새로 만들지 않으려고 여기에 둔다.
 //
-// 이 파일은 CommonJS 다. 저장소에 package.json 이 없어서 .js 는 CJS 로 읽힌다.
-// 순수 함수는 module.exports._lib 로 내보내 tests/ 에서 그대로 검사한다.
+// CommonJS 엔트리이며 ESM인 AI SDK는 이미지 생성 요청 때만 동적으로 import한다.
+// 순수 함수는 module.exports._lib 로 내보내 tests/ 에서 검증한다.
 
 const SUPA_URL = process.env.SUPABASE_URL || "https://kfgtvifupumjuewwxzmz.supabase.co";
 // 브라우저(index.html)에 이미 들어 있는 공개용 키다. 비밀이 아니다.
 const SUPA_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || "sb_publishable_KROAv1c1eX3wlEt8Mog8OQ_jNTMJzoM";
 const BUCKET = "lodging-reels";
 
-const GATEWAY_GENERATIONS = "https://ai-gateway.vercel.sh/v1/images/generations";
 const MODEL = "openai/gpt-image-2.5-sunburst";
 
 // 요청 크기는 원본 사진 비율에 가까운 16의 배수로 맞춘다.
 // 긴 변은 최대 1920픽셀로 제한하고, 결과 비율은 브라우저에서 다시 확인한다.
 const MAX_EDGE = 1920;
 const QUALITIES = ["low", "medium", "high", "xhigh", "max"];
-const MAX_REFS = 15;           // 기존 UI 저장 구조의 호환용 한도. Generate API에는 사진을 첨부하지 않는다.
+const MAX_REFS = 15;           // 사진별 추가 레퍼런스 최대 15장 (원본 포함 최대 16장).
 const MAX_PROMPT = 32000;
 const MAX_RESPONSE_B64 = 4200000; // Vercel 함수 응답 한도 4.5MB 아래로.
-const UPSTREAM_TIMEOUT_MS = 280000; // Hobby 최대 300초 안에서 끊는다.
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_TOTAL_INPUT_BYTES = 48 * 1024 * 1024;
+const IMAGE_FETCH_TIMEOUT_MS = 15000;
+const UPSTREAM_TIMEOUT_MS = 280000; // Vercel 함수 300초 안에서 종료.
 
 const IMG_EXT = /\.(jpe?g|png|webp)$/i;
 
@@ -47,7 +49,7 @@ function publicUrl(path) {
   return SUPA_URL + "/storage/v1/object/public/" + BUCKET + "/" + path.split("/").map(encodeURIComponent).join("/");
 }
 
-// 기존 UI와 호환되도록 원본·레퍼런스 경로를 검증하되 Generate API에는 사진 URL을 전달하지 않는다.
+// 원본/레퍼런스 경로는 호출 사용자 폴더만 허용. 검증된 사진은 이미지 바이트로 로드한다.
 function validate(body, uid) {
   if (!body || typeof body !== "object") return { error: "bad_json", message: "요청을 읽지 못했어요." };
   const base = body.base;
@@ -83,27 +85,62 @@ function sizeForAspect(w,h){
   return round16(outH*w/h)+"x"+outH;
 }
 
-// OpenAI-compatible /images/generations accepts text; neither base nor refs are sent.
-function buildPayload(v, minimal) {
-  const payload = { model: MODEL, prompt: v.prompt, n: 1 };
+// Generate API 고수준 호출. 실제 이미지 입력은 prompt.images에 원본→레퍼런스 순서로 배치한다.
+function buildPayload(v, images, minimal) {
+  const payload = {
+    model: MODEL,
+    prompt: { text: v.prompt, images: images },
+    n: 1,
+    maxRetries: 0
+  };
   if (!minimal) {
-    const size=sizeForAspect(v.baseW,v.baseH);
-    if(size)payload.size=size;
-    payload.quality = v.quality;
-    payload.output_format = "jpeg";
-    payload.output_compression = 90;
+    const size = sizeForAspect(v.baseW, v.baseH);
+    if (size) payload.size = size;
+    payload.providerOptions = {
+      openai: { quality: v.quality, outputFormat: "jpeg", outputCompression: 90 }
+    };
   }
   return payload;
 }
 
-// Gateway 문서에 data[].b64_json 과 data[] 문자열 두 형태가 다 나온다. 둘 다 받는다.
-function pickImage(out) {
-  const d = out && Array.isArray(out.data) ? out.data[0] : null;
-  if (!d) return null;
-  if (typeof d === "string") return { b64: d };
-  if (d.b64_json) return { b64: d.b64_json };
-  if (d.url) return { url: d.url };
-  return null;
+// 이미지 입력은 브라우저의 storage 경로에서만 불러온다. 임의 외부 URL을 요청하지 않는다.
+// Image SDK에 이미지를 문자열로 흘려보내지 않고 실제 바이트를 전달한다.
+async function loadPromptImages(v, fetcher) {
+  const request = fetcher || fetch;
+  const paths = [v.base].concat(v.refs);
+  const buffers = await Promise.all(paths.map(async function(path) {
+    const ctl = new AbortController();
+    const timer = setTimeout(function(){ ctl.abort(); }, IMAGE_FETCH_TIMEOUT_MS);
+    try {
+      const response = await request(publicUrl(path), { signal: ctl.signal });
+      if (!response.ok) throw new Error("storage_read_" + response.status);
+      const length = Number(response.headers && response.headers.get("content-length") || 0);
+      if (length > MAX_IMAGE_BYTES) throw new Error("source_too_large");
+      const mime = String(response.headers && response.headers.get("content-type") || "").toLowerCase();
+      if (mime && !mime.startsWith("image/") && mime.indexOf("application/octet-stream") !== 0)
+        throw new Error("source_not_image");
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (!bytes.length || bytes.byteLength > MAX_IMAGE_BYTES) throw new Error("source_bad_size");
+      return bytes;
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+  const total = buffers.reduce(function(sum, bytes) { return sum + bytes.byteLength; }, 0);
+  if (total > MAX_TOTAL_INPUT_BYTES) throw new Error("references_total_too_large");
+  return buffers;
+}
+
+// createGateway({apiKey})는 기존 Vercel OIDC/API Gateway 토큰을 그대로 사용한다.
+// 실제 이미지 생성은 generateImage()이며 입력 사진이 포함된 prompt를 전달한다.
+async function generateWithReferences(v, images, token, minimal, signal, sdk) {
+  const ai = sdk || await import("ai");
+  const gateway = ai.createGateway({ apiKey: token });
+  return ai.generateImage({
+    ...buildPayload(v, images, minimal),
+    model: gateway.imageModel(MODEL),
+    abortSignal: signal
+  });
 }
 
 function sniffMime(b64) {
@@ -135,23 +172,6 @@ async function whoIs(auth) {
     return u && u.id ? u.id : null;
   } catch (e) {
     return null;
-  }
-}
-
-async function callGateway(token, payload) {
-  const ctl = new AbortController();
-  const timer = setTimeout(function () { ctl.abort(); }, UPSTREAM_TIMEOUT_MS);
-  try {
-    const r = await fetch(GATEWAY_GENERATIONS, {
-      method: "POST",
-      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: ctl.signal,
-    });
-    const text = await r.text();
-    return { status: r.status, ok: r.ok, text: text };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -188,72 +208,79 @@ async function handler(req, res) {
   if (v.error) return send(res, 400, v);
 
   const t0 = Date.now();
-  let minimal = false;
-  let up;
+  let images;
   try {
-    up = await callGateway(token, buildPayload(v, false));
-    if (!up.ok && looksLikeParamError(up.status, up.text)) {
-      console.warn("image-edit: optional params rejected, retrying minimal", { status: up.status, body: up.text.slice(0, 300) });
-      minimal = true;
-      up = await callGateway(token, buildPayload(v, true));
-    }
+    images = await loadPromptImages(v);
   } catch (e) {
-    const aborted = e && e.name === "AbortError";
-    console.error("image-edit upstream failure", { aborted: aborted, reason: String(e).slice(0, 200) });
-    return send(res, aborted ? 504 : 502, {
-      error: aborted ? "timeout" : "upstream_unreachable",
-      message: aborted ? "이미지 생성이 너무 오래 걸려서 끊었어요. 품질을 한 단계 낮춰 다시 해보세요." : "AI Gateway 에 연결하지 못했어요.",
+    console.error("image-generate input read failure", { reason: String(e).slice(0, 180), refs: v.refs.length });
+    return send(res, 502, {
+      error: "source_unavailable",
+      message: "원본 또는 레퍼런스 사진을 읽지 못했어요. 파일 업로드 상태나 용량을 확인해 주세요."
     });
   }
 
-  if (!up.ok) {
-    console.error("image-edit gateway error", { status: up.status, minimal: minimal, body: up.text.slice(0, 500) });
-    const code = up.status === 429 ? "rate_limited"
-      : (up.status === 401 || up.status === 403) ? "gateway_auth"
-      : up.status === 404 ? "bad_model"
-      : "upstream_error";
-    return send(res, up.status === 429 ? 429 : 502, { error: code, message: up.text.slice(0, 400) });
+  let result, minimal = false;
+  const ctl = new AbortController();
+  const timer = setTimeout(function(){ ctl.abort(); }, UPSTREAM_TIMEOUT_MS);
+  try {
+    try {
+      result = await generateWithReferences(v, images, token, false, ctl.signal);
+    } catch (e) {
+      const status = Number(e && (e.statusCode || e.status) || 0);
+      const reason = String(e && (e.responseBody || e.message) || e || "");
+      if (!looksLikeParamError(status, reason)) throw e;
+      console.warn("image-generate: optional params rejected; retry minimal", { status: status, reason: reason.slice(0, 220) });
+      minimal = true;
+      result = await generateWithReferences(v, images, token, true, ctl.signal);
+    }
+  } catch (e) {
+    const status = Number(e && (e.statusCode || e.status) || 0);
+    const aborted = ctl.signal.aborted || (e && e.name === "AbortError");
+    const reason = String(e && (e.responseBody || e.message) || e || "");
+    console.error("image-generate upstream failure", { status: status, aborted: aborted, reason: reason.slice(0, 320) });
+    const code = aborted ? "timeout" : status === 429 ? "rate_limited"
+      : status === 401 || status === 403 ? "gateway_auth"
+      : status === 404 ? "bad_model" : "upstream_error";
+    const message = aborted ? "이미지 생성 시간 초과예요. 품질을 낮춰 다시 시도해 주세요."
+      : reason.slice(0, 400) || "AI Gateway 이미지 생성에 실패했어요.";
+    return send(res, aborted ? 504 : status === 429 ? 429 : 502, { error: code, message: message });
+  } finally {
+    clearTimeout(timer);
   }
 
-  let out;
-  try { out = JSON.parse(up.text); } catch (e) { out = null; }
-  let img = pickImage(out);
-  if (img && img.url) {
-    // GPT image 모델은 url 을 안 주지만, 다른 경로로 오면 여기서 받아 base64 로 바꾼다.
-    try {
-      const r = await fetch(img.url);
-      img = { b64: Buffer.from(await r.arrayBuffer()).toString("base64") };
-    } catch (e) { img = null; }
-  }
-  if (!img || !img.b64) {
-    console.error("image-edit: no image in response", { preview: up.text.slice(0, 300) });
+  const image = result && ((result.images && result.images[0]) || result.image);
+  const b64 = image && (image.base64 || (image.uint8Array && Buffer.from(image.uint8Array).toString("base64")));
+  if (!b64) {
+    console.error("image-generate: empty generated result");
     return send(res, 502, { error: "no_image", message: "이미지가 응답에 없어요." });
   }
-  if (img.b64.length > MAX_RESPONSE_B64) {
-    console.error("image-edit: result too large", { b64: img.b64.length, minimal: minimal });
+  if (b64.length > MAX_RESPONSE_B64) {
+    console.error("image-generate: output too large", { length: b64.length });
     return send(res, 502, { error: "too_large", message: "결과 이미지가 너무 커서 받지 못했어요. 품질을 낮춰 다시 해보세요." });
   }
 
   console.log("image-generate ok", {
-    model: MODEL, quality: v.quality, refs: v.refs.length, minimal: minimal,
-    ms: Date.now() - t0, b64: img.b64.length,
+    model: MODEL, refs: v.refs.length, inputs: images.length,
+    quality: v.quality, minimal: minimal, ms: Date.now() - t0, b64: b64.length
   });
   return send(res, 200, {
-    b64: img.b64,
-    mime: sniffMime(img.b64),
+    b64: b64,
+    mime: image.mediaType || sniffMime(b64),
     model: MODEL,
-    mode: "generate",
+    mode: "generate-with-references",
+    input_images: images.length,
     quality: minimal ? null : v.quality,
-    requested_size: minimal ? null : sizeForAspect(v.baseW,v.baseH),
+    requested_size: minimal ? null : sizeForAspect(v.baseW, v.baseH),
     minimal: minimal,
-    ms: Date.now() - t0,
+    ms: Date.now() - t0
   });
 }
 
 module.exports = handler;
 module.exports._lib = {
   checkPath: checkPath, publicUrl: publicUrl, validate: validate, buildPayload: buildPayload,
+  loadPromptImages: loadPromptImages, generateWithReferences: generateWithReferences,
   sizeForAspect: sizeForAspect, round16: round16,
-  pickImage: pickImage, sniffMime: sniffMime, looksLikeParamError: looksLikeParamError,
+  sniffMime: sniffMime, looksLikeParamError: looksLikeParamError,
   MODEL: MODEL, MAX_EDGE: MAX_EDGE, MAX_REFS: MAX_REFS,
 };

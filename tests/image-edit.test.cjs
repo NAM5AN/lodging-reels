@@ -40,39 +40,83 @@ test("validate: prompt required, refs capped at 15, quality falls back to high",
   assert.equal(lib.validate({base:photo,refs:[],prompt:"x",quality:"max"},UID).quality,"max");
 });
 
-test("payload: Sunburst Generate only text prompt, original aspect size, jpeg, minimal drops optional params",()=>{
+test("Sunburst generateImage payload contains source+references in order and original aspect",()=>{
   const v=lib.validate({base:photo,baseW:1600,baseH:900,refs:[ref1,ref2],prompt:"p",quality:"xhigh"},UID);
-  const full=lib.buildPayload(v,false);
+  const imgs=[Uint8Array.from([11]),Uint8Array.from([22]),Uint8Array.from([33])];
+  const full=lib.buildPayload(v,imgs,false);
   assert.equal(full.model,"openai/gpt-image-2.5-sunburst");
-  assert.equal(full.images,undefined,"Generate API cannot accept images");
-  assert.equal(full.image,undefined,"Neither base nor refs is sent");
-  assert.equal(full.prompt,"p");
+  assert.equal(full.prompt.text,"p");
+  assert.equal(full.prompt.images.length,3);
+  assert.strictEqual(full.prompt.images[0],imgs[0],"Image 1 is original photo");
+  assert.strictEqual(full.prompt.images[1],imgs[1],"Image 2 is first extra reference");
+  assert.strictEqual(full.prompt.images[2],imgs[2],"Image 3 is second extra reference");
   assert.equal(full.size,"1600x896");
-  assert.equal(full.quality,"xhigh");
-  assert.equal(full.output_format,"jpeg");
+  assert.equal(full.providerOptions.openai.quality,"xhigh");
+  assert.equal(full.providerOptions.openai.outputFormat,"jpeg");
+  assert.equal(full.providerOptions.openai.outputCompression,90);
   assert.equal(full.n,1);
+  assert.equal(full.maxRetries,0);
   const [w,h]=full.size.split("x").map(Number);
-  assert.equal(w%16,0); assert.equal(h%16,0);
+  assert.equal(w%16,0);assert.equal(h%16,0);
   assert.ok(Math.abs(w/h-1600/900)<0.012,"request size stays close to source aspect ratio");
-  const min=lib.buildPayload(v,true);
-  assert.deepEqual(Object.keys(min).sort(),["model","n","prompt"]);
+  const min=lib.buildPayload(v,imgs,true);
+  assert.deepEqual(Object.keys(min).sort(),["maxRetries","model","n","prompt"]);
+  assert.strictEqual(min.prompt.images,imgs,"minimal retry still sends every input image");
 });
 
-test("Generate request contains no base or reference URLs; frontend makes limits clear",()=>{
+test("source photos and extra references are downloaded as actual bytes",async()=>{
   const v=lib.validate({base:photo,baseW:1920,baseH:1080,refs:[ref1,ref2],prompt:"side view",quality:"high"},UID);
-  const payload=lib.buildPayload(v,false);
-  assert.deepEqual(Object.keys(payload).sort(),["model","n","output_compression","output_format","prompt","quality","size"]);
-  assert.ok(!JSON.stringify(payload).includes("/photo/"));
-  assert.ok(!JSON.stringify(payload).includes("/ref/"));
-  assert.match(html,/Generate 실험 모드/);
-  assert.match(html,/원본과 레퍼런스 사진은 AI에 전달되지 않아요/);
+  const got=[];
+  const fakeFetch=async function(url,options){
+    got.push({url,signal:options.signal});
+    return {
+      ok:true,
+      headers:{get:(key)=>key==="content-type"?"image/jpeg":key==="content-length"?"4":null},
+      arrayBuffer:async()=>Uint8Array.from([255,216,255,217]).buffer
+    };
+  };
+  const images=await lib.loadPromptImages(v,fakeFetch);
+  assert.equal(images.length,3);
+  assert.ok(images.every(x=>x instanceof Uint8Array));
+  assert.ok(images.every(x=>x.byteLength===4));
+  assert.deepEqual(got.map(x=>x.url),[
+    lib.publicUrl(photo),lib.publicUrl(ref1),lib.publicUrl(ref2)
+  ]);
+  assert.ok(got.every(x=>x.signal instanceof AbortSignal));
+  await assert.rejects(
+    lib.loadPromptImages(v,async()=>({ok:false,status:404})),
+    /storage_read_404/
+  );
 });
 
-test("response: both data[].b64_json and data[] string shapes are read",()=>{
-  assert.deepEqual(lib.pickImage({data:[{b64_json:"/9jAAA"}]}),{b64:"/9jAAA"});
-  assert.deepEqual(lib.pickImage({data:["iVBORxx"]}),{b64:"iVBORxx"});
-  assert.deepEqual(lib.pickImage({data:[{url:"https://x/y.png"}]}),{url:"https://x/y.png"});
-  assert.equal(lib.pickImage({data:[]}),null);
+test("high-level generateImage receives all visual references through Vercel Gateway",async()=>{
+  const v=lib.validate({base:photo,baseW:1600,baseH:900,refs:[ref1,ref2],prompt:"new camera position",quality:"high"},UID);
+  const images=[Uint8Array.from([1]),Uint8Array.from([2]),Uint8Array.from([3])];
+  let sent,usedToken;
+  const fakeSDK={
+    createGateway:({apiKey})=>{
+      usedToken=apiKey;
+      return {imageModel:(slug)=>({modelSlug:slug})};
+    },
+    generateImage:async options=>{
+      sent=options;
+      return {images:[{base64:"/9j/4AAQ",mediaType:"image/jpeg"}]};
+    }
+  };
+  const response=await lib.generateWithReferences(v,images,"TEST_ONLY_OIDC",false,new AbortController().signal,fakeSDK);
+  assert.equal(usedToken,"TEST_ONLY_OIDC");
+  assert.equal(sent.model.modelSlug,"openai/gpt-image-2.5-sunburst");
+  assert.strictEqual(sent.prompt.images,images);
+  assert.equal(sent.prompt.text,"new camera position");
+  assert.equal(sent.size,"1600x896");
+  assert.equal(sent.providerOptions.openai.quality,"high");
+  assert.equal(response.images[0].mediaType,"image/jpeg");
+  assert.match(html,/원본 사진 1장과 이 사진에 연결된 레퍼런스 사진/);
+  assert.match(html,/AI에 실제 이미지 입력으로 전달/);
+  assert.ok(!html.includes("AI 미전달"));
+});
+
+test("image response MIME sniffing remains available as SDK output fallback",()=>{
   assert.equal(lib.sniffMime("/9j/4AAQ"),"image/jpeg");
   assert.equal(lib.sniffMime("iVBORw0K"),"image/png");
   assert.equal(lib.sniffMime("UklGRiQ"),"image/webp");
@@ -124,14 +168,15 @@ test("each photo carries its own prompt and its own references",()=>{
   assert.equal(a.baseW,1600);
   assert.equal(a.baseH,900);
   assert.deepEqual([...a.refs],["r1","r2"],"only p1's refs");
-  assert.match(a.prompt,/Generate one realistic accommodation photograph/);
-  assert.doesNotMatch(a.prompt,/Image 1|Images 2-3/);
+  assert.match(a.prompt,/Generate a NEW photorealistic camera view/);
+  assert.match(a.prompt,/Image 1 is the primary visual reference/);
+  assert.match(a.prompt,/Images 2-3 are additional visual references/);
   assert.match(a.prompt,/\n\n창밖을 노을로$/);
   assert.equal(a.quality,"high");
 
   const c=b.editRequest(proj,"p2");
   assert.deepEqual([...c.refs],[],"p2 gets none of p1's refs");
-  assert.doesNotMatch(c.prompt,/reference|Image 1/,"Generate prompt never references unseen input images");
+  assert.doesNotMatch(c.prompt,/Images 2-/, "no additional reference sentence without refs");
   assert.match(c.prompt,/\n\n침구를 흰색으로$/);
 
   assert.equal(b.editRequest(proj,"p3"),null,"blank prompt → nothing is sent");
@@ -141,17 +186,18 @@ test("each photo carries its own prompt and its own references",()=>{
   assert.deepEqual([...b.editPending(proj)],["p2"],"bulk run skips photos that already have a result");
 });
 
-test("Generate prompt never claims to see user-uploaded photos; keep-real toggle works",()=>{
+test("Generate prompts use source photograph and references but permit different camera position",()=>{
   const b=box({});
   const one=b.editPromptText({editSpecs:{p:{prompt:"x",refs:[{id:"r"}]}}},"p");
-  assert.match(one,/Generate one realistic accommodation photograph/);
-  assert.doesNotMatch(one,/Image 1|Image 2|reference image/);
-  assert.match(one,/do not invent extra rooms or facilities/);
-  assert.match(one,/requested output aspect ratio/);
+  assert.match(one,/Generate a NEW photorealistic camera view/);
+  assert.match(one,/Image 2 is an additional visual reference/);
+  assert.match(one,/Do not invent rooms, windows or facilities/);
+  assert.match(one,/requested camera angle, viewpoint, perspective, framing and focal length/);
+  assert.match(one,/original aspect ratio/);
   const off=b.editPromptText({editKeepReal:false,editSpecs:{p:{prompt:"x",refs:[]}}},"p");
-  assert.doesNotMatch(off,/do not invent extra rooms or facilities/);
-  assert.match(off,/^Generate one realistic accommodation photograph/);
-  assert.match(off,/requested output aspect ratio/);
+  assert.doesNotMatch(off,/Do not invent rooms, windows or facilities/);
+  assert.match(off,/^Generate a NEW photorealistic camera view/);
+  assert.match(off,/original aspect ratio/);
 });
 
 test("text typed under the old shared-prompt layout is carried into the photo's own prompt",()=>{
@@ -184,11 +230,11 @@ test("sizeForAspect preserves source orientation and outputs 16-aligned dimensio
   const input=lib.validate({base:photo,baseW:900,baseH:1600,refs:[],prompt:"x"},UID);
   assert.equal(input.baseW,900);
   assert.equal(input.baseH,1600);
-  assert.equal(lib.buildPayload(input,false).size,"896x1600");
+  assert.equal(lib.buildPayload(input,[Uint8Array.from([1])],false).size,"896x1600");
 });
 
 test("stage nine no longer forces portrait aspect or fixes output at 1080x1920",()=>{
-  assert.ok(html.includes("원본 사진은 <strong>비율 결정과 결과 비교에만 사용</strong>돼요"));
+  assert.ok(html.includes("원본 사진 1장과 이 사진에 연결된 레퍼런스 사진"));
   assert.ok(!html.includes("GPT Image 2.5 Sunburst 로 1080×1920 세로 이미지를 만들어요"));
   assert.ok(html.includes("function fitOriginalAspect(blob, targetW, targetH)"));
   assert.ok(!html.includes("function fitVertical(blob)"));
