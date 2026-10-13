@@ -40,13 +40,13 @@ test("validate: prompt required, refs capped at 15, quality falls back to high",
   assert.equal(lib.validate({base:photo,refs:[],prompt:"x",quality:"max"},UID).quality,"max");
 });
 
-test("payload: Sunburst, base photo first, original aspect size, jpeg, minimal drops optional params",()=>{
+test("payload: Sunburst Generate only text prompt, original aspect size, jpeg, minimal drops optional params",()=>{
   const v=lib.validate({base:photo,baseW:1600,baseH:900,refs:[ref1,ref2],prompt:"p",quality:"xhigh"},UID);
   const full=lib.buildPayload(v,false);
   assert.equal(full.model,"openai/gpt-image-2.5-sunburst");
-  assert.equal(full.images.length,3);
-  assert.ok(full.images[0].image_url.endsWith("/photo/lx9k2a.jpg"),"base is Image 1");
-  assert.ok(full.images[0].image_url.startsWith("https://kfgtvifupumjuewwxzmz.supabase.co/storage/v1/object/public/lodging-reels/"));
+  assert.equal(full.images,undefined,"Generate API cannot accept images");
+  assert.equal(full.image,undefined,"Neither base nor refs is sent");
+  assert.equal(full.prompt,"p");
   assert.equal(full.size,"1600x896");
   assert.equal(full.quality,"xhigh");
   assert.equal(full.output_format,"jpeg");
@@ -55,7 +55,17 @@ test("payload: Sunburst, base photo first, original aspect size, jpeg, minimal d
   assert.equal(w%16,0); assert.equal(h%16,0);
   assert.ok(Math.abs(w/h-1600/900)<0.012,"request size stays close to source aspect ratio");
   const min=lib.buildPayload(v,true);
-  assert.deepEqual(Object.keys(min).sort(),["images","model","n","prompt"]);
+  assert.deepEqual(Object.keys(min).sort(),["model","n","prompt"]);
+});
+
+test("Generate request contains no base or reference URLs; frontend makes limits clear",()=>{
+  const v=lib.validate({base:photo,baseW:1920,baseH:1080,refs:[ref1,ref2],prompt:"side view",quality:"high"},UID);
+  const payload=lib.buildPayload(v,false);
+  assert.deepEqual(Object.keys(payload).sort(),["model","n","output_compression","output_format","prompt","quality","size"]);
+  assert.ok(!JSON.stringify(payload).includes("/photo/"));
+  assert.ok(!JSON.stringify(payload).includes("/ref/"));
+  assert.match(html,/Generate 실험 모드/);
+  assert.match(html,/원본과 레퍼런스 사진은 AI에 전달되지 않아요/);
 });
 
 test("response: both data[].b64_json and data[] string shapes are read",()=>{
@@ -114,13 +124,14 @@ test("each photo carries its own prompt and its own references",()=>{
   assert.equal(a.baseW,1600);
   assert.equal(a.baseH,900);
   assert.deepEqual([...a.refs],["r1","r2"],"only p1's refs");
-  assert.match(a.prompt,/Images 2-3 are references only\./);
+  assert.match(a.prompt,/Generate one realistic accommodation photograph/);
+  assert.doesNotMatch(a.prompt,/Image 1|Images 2-3/);
   assert.match(a.prompt,/\n\n창밖을 노을로$/);
   assert.equal(a.quality,"high");
 
   const c=b.editRequest(proj,"p2");
   assert.deepEqual([...c.refs],[],"p2 gets none of p1's refs");
-  assert.doesNotMatch(c.prompt,/reference/,"no reference sentence without refs");
+  assert.doesNotMatch(c.prompt,/reference|Image 1/,"Generate prompt never references unseen input images");
   assert.match(c.prompt,/\n\n침구를 흰색으로$/);
 
   assert.equal(b.editRequest(proj,"p3"),null,"blank prompt → nothing is sent");
@@ -130,17 +141,17 @@ test("each photo carries its own prompt and its own references",()=>{
   assert.deepEqual([...b.editPending(proj)],["p2"],"bulk run skips photos that already have a result");
 });
 
-test("one reference reads as singular; keep-real sentence can be turned off",()=>{
+test("Generate prompt never claims to see user-uploaded photos; keep-real toggle works",()=>{
   const b=box({});
   const one=b.editPromptText({editSpecs:{p:{prompt:"x",refs:[{id:"r"}]}}},"p");
-  assert.match(one,/Image 2 is a reference only\./);
-  assert.match(one,/do not add rooms or facilities/);
+  assert.match(one,/Generate one realistic accommodation photograph/);
+  assert.doesNotMatch(one,/Image 1|Image 2|reference image/);
+  assert.match(one,/do not invent extra rooms or facilities/);
+  assert.match(one,/requested output aspect ratio/);
   const off=b.editPromptText({editKeepReal:false,editSpecs:{p:{prompt:"x",refs:[]}}},"p");
-  assert.doesNotMatch(off,/real accommodation/);
-  assert.match(off,/^Image 1 is the base photo to edit\. Preserve the original aspect ratio/);
-  assert.match(one,/keep its actual space, layout, furniture, windows and view/);
-  assert.match(one,/do not add rooms or facilities/);
-  assert.doesNotMatch(one,/Preserve the full original framing|Do not crop|reframe it/);
+  assert.doesNotMatch(off,/do not invent extra rooms or facilities/);
+  assert.match(off,/^Generate one realistic accommodation photograph/);
+  assert.match(off,/requested output aspect ratio/);
 });
 
 test("text typed under the old shared-prompt layout is carried into the photo's own prompt",()=>{
@@ -177,7 +188,7 @@ test("sizeForAspect preserves source orientation and outputs 16-aligned dimensio
 });
 
 test("stage nine no longer forces portrait aspect or fixes output at 1080x1920",()=>{
-  assert.ok(html.includes("원본 사진 비율을 유지한 이미지를 만들어요"));
+  assert.ok(html.includes("원본 사진은 <strong>비율 결정과 결과 비교에만 사용</strong>돼요"));
   assert.ok(!html.includes("GPT Image 2.5 Sunburst 로 1080×1920 세로 이미지를 만들어요"));
   assert.ok(html.includes("function fitOriginalAspect(blob, targetW, targetH)"));
   assert.ok(!html.includes("function fitVertical(blob)"));

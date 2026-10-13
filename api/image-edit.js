@@ -1,6 +1,6 @@
 "use strict";
-// ⑨ 이미지 가공 — 숙소 사진을 기본으로, 추가 레퍼런스와 프롬프트로
-// GPT Image 2.5 Sunburst 가 원본 사진 비율을 유지한 이미지를 만든다.
+// ⑨ Generate 실험 — 이미지 입력 없이 텍스트 프롬프트로 새 장면을 생성한다.
+// 기존 원본/레퍼런스 이미지는 AI에 전송하지 않으며 원본 가로세로 비율만 활용한다.
 //
 // 왜 Supabase Edge Function 이 아니라 Vercel 함수인가:
 //   Vercel 함수는 OIDC 토큰으로 AI Gateway 에 키 없이 붙는다.
@@ -15,14 +15,14 @@ const SUPA_URL = process.env.SUPABASE_URL || "https://kfgtvifupumjuewwxzmz.supab
 const SUPA_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || "sb_publishable_KROAv1c1eX3wlEt8Mog8OQ_jNTMJzoM";
 const BUCKET = "lodging-reels";
 
-const GATEWAY_EDITS = "https://ai-gateway.vercel.sh/v1/images/edits";
+const GATEWAY_GENERATIONS = "https://ai-gateway.vercel.sh/v1/images/generations";
 const MODEL = "openai/gpt-image-2.5-sunburst";
 
 // 요청 크기는 원본 사진 비율에 가까운 16의 배수로 맞춘다.
 // 긴 변은 최대 1920픽셀로 제한하고, 결과 비율은 브라우저에서 다시 확인한다.
 const MAX_EDGE = 1920;
 const QUALITIES = ["low", "medium", "high", "xhigh", "max"];
-const MAX_REFS = 15;           // GPT image 모델은 입력 16장까지. 1장은 기본 사진.
+const MAX_REFS = 15;           // 기존 UI 저장 구조의 호환용 한도. Generate API에는 사진을 첨부하지 않는다.
 const MAX_PROMPT = 32000;
 const MAX_RESPONSE_B64 = 4200000; // Vercel 함수 응답 한도 4.5MB 아래로.
 const UPSTREAM_TIMEOUT_MS = 280000; // Hobby 최대 300초 안에서 끊는다.
@@ -47,7 +47,7 @@ function publicUrl(path) {
   return SUPA_URL + "/storage/v1/object/public/" + BUCKET + "/" + path.split("/").map(encodeURIComponent).join("/");
 }
 
-// 요청 본문 검사. 통과하면 { base, refs, prompt, quality }, 아니면 { error, message }.
+// 기존 UI와 호환되도록 원본·레퍼런스 경로를 검증하되 Generate API에는 사진 URL을 전달하지 않는다.
 function validate(body, uid) {
   if (!body || typeof body !== "object") return { error: "bad_json", message: "요청을 읽지 못했어요." };
   const base = body.base;
@@ -83,12 +83,9 @@ function sizeForAspect(w,h){
   return round16(outH*w/h)+"x"+outH;
 }
 
-// 기본 사진이 반드시 첫 번째다. 프롬프트의 'Image 1' 이 이걸 가리킨다.
+// OpenAI-compatible /images/generations accepts text; neither base nor refs are sent.
 function buildPayload(v, minimal) {
-  const images = [{ image_url: publicUrl(v.base) }].concat(
-    v.refs.map(function (p) { return { image_url: publicUrl(p) }; })
-  );
-  const payload = { model: MODEL, prompt: v.prompt, images: images, n: 1 };
+  const payload = { model: MODEL, prompt: v.prompt, n: 1 };
   if (!minimal) {
     const size=sizeForAspect(v.baseW,v.baseH);
     if(size)payload.size=size;
@@ -145,7 +142,7 @@ async function callGateway(token, payload) {
   const ctl = new AbortController();
   const timer = setTimeout(function () { ctl.abort(); }, UPSTREAM_TIMEOUT_MS);
   try {
-    const r = await fetch(GATEWAY_EDITS, {
+    const r = await fetch(GATEWAY_GENERATIONS, {
       method: "POST",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -237,7 +234,7 @@ async function handler(req, res) {
     return send(res, 502, { error: "too_large", message: "결과 이미지가 너무 커서 받지 못했어요. 품질을 낮춰 다시 해보세요." });
   }
 
-  console.log("image-edit ok", {
+  console.log("image-generate ok", {
     model: MODEL, quality: v.quality, refs: v.refs.length, minimal: minimal,
     ms: Date.now() - t0, b64: img.b64.length,
   });
@@ -245,6 +242,7 @@ async function handler(req, res) {
     b64: img.b64,
     mime: sniffMime(img.b64),
     model: MODEL,
+    mode: "generate",
     quality: minimal ? null : v.quality,
     requested_size: minimal ? null : sizeForAspect(v.baseW,v.baseH),
     minimal: minimal,
