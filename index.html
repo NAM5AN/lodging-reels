@@ -2723,21 +2723,30 @@
   }
 
   // Sunburst generateImage: Image 1은 실제 숙소 원본 사진, Image 2부터는 사진별 레퍼런스다.
-  // 원본을 픽셀 편집하는 대신 사진들을 시각적 입력으로 참고해 새 구도를 만든다.
+  // 원본은 실제 공간 참고, 카메라/행동은 사진별 지시 우선. 특정 인물·포즈·시점의 전역 강제 없음.
   function editHead(proj, refCount){
-    var head="Generate a NEW photorealistic camera view of the real accommodation shown in Image 1."+
-      " Image 1 is the primary visual reference for the identity and architecture of the real place, not a fixed camera frame to retouch.";
+    var keepReal=proj.editKeepReal!==false;
+    var head="Image 1 shows the real location where the requested scene takes place."+
+      " Use it to understand the place and its visual identity, not as a fixed camera frame to repeat."+
+      " Create a new photorealistic photograph as if someone physically present at this location captured the moment described by the user."+
+      " The result should feel like an independent photograph taken here, rather than a retouch or cut-and-paste of Image 1.";
     if(refCount===1) head+=" Image 2 is an additional visual reference.";
     else if(refCount>1) head+=" Images 2-"+(refCount+1)+" are additional visual references.";
-    if(proj.editKeepReal!==false){
-      head+=" Preserve the real architecture, actual room layout, existing furniture arrangement, windows and facilities visible in Image 1."+
-        " Do not invent rooms, windows or facilities. A different camera position can naturally change their apparent placement in the frame.";
-      if(refCount) head+=" Use the extra references for style, lighting, mood and props only, not to replace the actual accommodation.";
+    if(keepReal){
+      head+=" Preserve the actual architecture, spatial proportions and real-world relationships of major furniture, windows and permanent facilities in Image 1."+
+        " Moving the camera can change their appearance and position within the picture without changing their actual arrangement."+
+        " Do not invent extra rooms, windows or built-in facilities.";
     }
-    return head+" Follow the user's requested camera angle, viewpoint, perspective, framing and focal length; these may change freely."+
-      " Maintain the original aspect ratio (width to height) of Image 1 without stretching or padding.";
+    if(refCount){
+      head+=" Use the additional images as references for relevant people, appearance, clothing, actions, props, lighting, atmosphere or photographic composition according to the user's instructions.";
+      if(keepReal) head+=" Image 1 remains the reference for the actual accommodation layout.";
+    }
+    return head+" Follow the user's specific instructions for subject, action, expression, gaze and camera perspective."+
+      " When no camera setup is specified, choose a natural, non-formulaic viewpoint, camera height, distance and framing suited to the scene; the original viewpoint is not a required default."+
+      " If people are requested, depict them naturally engaged in the described activity within the space."+
+      " When no pose is specified, let gestures and body language arise from the moment rather than a stock portrait pose."+
+      " Preserve Image 1's original width-to-height aspect ratio without stretching or padding.";
   }
-
   // 모델에 보내는 최종 프롬프트.
   function editPromptText(proj, pid){
     var sp=peekSpec(proj, pid);
@@ -2789,7 +2798,7 @@
        '카메라 각도·시점·화각은 프롬프트에 따라 변경할 수 있어요.</p>';
     h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">프롬프트 앞에 붙는 문장 보기</summary>'+
        '<pre id="editpreview" style="white-space:pre-wrap;font-size:12px;margin:8px 0 0">'+
-       esc(editHead(current, 2)+"\n\n(사진별 프롬프트)\n\nImage 1은 원본이며 Image 2부터는 레퍼런스로 입력돼요.")+'</pre></details>';
+       esc(editHead(current, 0)+"\n\n(각 사진의 사용자 프롬프트가 이어서 붙어요. 해당 사진에 레퍼런스가 있으면 Image 2~N 설명 문장이 자동 추가돼요.)")+'</pre></details>';
 
     h+='<label for="f_editQuality">품질 <span>모든 사진 공통</span></label><select id="f_editQuality">'+
        EDIT.qualities.map(function(q){
@@ -3275,7 +3284,7 @@
     if(ek) ek.addEventListener("change",function(){
       current.editKeepReal=ek.checked;
       var pv=document.getElementById("editpreview");
-      if(pv) pv.textContent=editHead(current,2)+"\n\n(사진별 프롬프트)\n\nImage 1은 원본이며 Image 2부터는 레퍼런스로 입력돼요.";
+      if(pv) pv.textContent=editHead(current,0)+"\n\n(각 사진의 사용자 프롬프트가 이어서 붙어요. 해당 사진에 레퍼런스가 있으면 Image 2~N 설명 문장이 자동 추가돼요.)";
       flushSave();
     });
     var eq=document.getElementById("f_editQuality");

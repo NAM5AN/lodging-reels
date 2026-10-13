@@ -168,9 +168,11 @@ test("each photo carries its own prompt and its own references",()=>{
   assert.equal(a.baseW,1600);
   assert.equal(a.baseH,900);
   assert.deepEqual([...a.refs],["r1","r2"],"only p1's refs");
-  assert.match(a.prompt,/Generate a NEW photorealistic camera view/);
-  assert.match(a.prompt,/Image 1 is the primary visual reference/);
+  assert.match(a.prompt,/Image 1 shows the real location where the requested scene takes place/);
+  assert.match(a.prompt,/Create a new photorealistic photograph/);
   assert.match(a.prompt,/Images 2-3 are additional visual references/);
+  assert.match(a.prompt,/for relevant people, appearance, clothing, actions, props, lighting, atmosphere or photographic composition/);
+  assert.match(a.prompt,/without changing their actual arrangement/);
   assert.match(a.prompt,/\n\n창밖을 노을로$/);
   assert.equal(a.quality,"high");
 
@@ -186,18 +188,34 @@ test("each photo carries its own prompt and its own references",()=>{
   assert.deepEqual([...b.editPending(proj)],["p2"],"bulk run skips photos that already have a result");
 });
 
-test("Generate prompts use source photograph and references but permit different camera position",()=>{
+test("default prompt makes a new photo in the same real location without locking camera or pose",()=>{
   const b=box({});
   const one=b.editPromptText({editSpecs:{p:{prompt:"x",refs:[{id:"r"}]}}},"p");
-  assert.match(one,/Generate a NEW photorealistic camera view/);
+  assert.match(one,/Image 1 shows the real location/);
+  assert.match(one,/not as a fixed camera frame to repeat/);
+  assert.match(one,/photograph as if someone physically present/);
   assert.match(one,/Image 2 is an additional visual reference/);
-  assert.match(one,/Do not invent rooms, windows or facilities/);
-  assert.match(one,/requested camera angle, viewpoint, perspective, framing and focal length/);
-  assert.match(one,/original aspect ratio/);
+  assert.match(one,/Do not invent extra rooms, windows or built-in facilities/);
+  assert.match(one,/original viewpoint is not a required default/);
+  assert.match(one,/Follow the user's specific instructions for subject, action, expression, gaze and camera perspective/);
+  assert.match(one,/When no pose is specified/);
+  assert.match(one,/original width-to-height aspect ratio/);
+  assert.doesNotMatch(one,/7-year-old|young girl|rolling on bed|parents' view|flower pose|chin resting/i,
+    "single-case subject, activity, viewpoint and pose are not hard-coded");
   const off=b.editPromptText({editKeepReal:false,editSpecs:{p:{prompt:"x",refs:[]}}},"p");
-  assert.doesNotMatch(off,/Do not invent rooms, windows or facilities/);
-  assert.match(off,/^Generate a NEW photorealistic camera view/);
-  assert.match(off,/original aspect ratio/);
+  assert.doesNotMatch(off,/Do not invent extra rooms, windows or built-in facilities/);
+  assert.match(off,/^Image 1 shows the real location/);
+  assert.match(off,/original width-to-height aspect ratio/);
+  assert.doesNotMatch(off,/Images 2-/);
+  const offWithRefs=b.editPromptText({editKeepReal:false,editSpecs:{p:{prompt:"x",refs:[{id:"r"}]}}},"p");
+  assert.match(offWithRefs,/Use the additional images as references for relevant people/);
+  assert.doesNotMatch(offWithRefs,/Image 1 remains the reference for the actual accommodation layout/);
+});
+
+test("generic help shows the common prompt, not a fictional two-reference prompt",()=>{
+  assert.match(html,/editHead\(current, 0\)/);
+  assert.doesNotMatch(html,/editHead\(current,\s*2\)/);
+  assert.match(html,/해당 사진에 레퍼런스가 있으면 Image 2~N 설명 문장이 자동 추가돼요/);
 });
 
 test("text typed under the old shared-prompt layout is carried into the photo's own prompt",()=>{
