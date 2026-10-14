@@ -172,6 +172,16 @@
   .elem-k .st.ok{color:var(--accent); font-weight:600}
   .elem-k .st.bad{color:var(--warn)}
   .elem-k button{padding:8px 12px; font-size:13.5px}
+  /* 일반 사진 요소와 Kling 정식 등록 상태를 분리해서 표시 */
+  .elem-statuses{display:grid;gap:5px;margin-top:9px}
+  .elem-status-line{display:flex;align-items:baseline;gap:5px 9px;flex-wrap:wrap;font-size:13px;line-height:1.45}
+  .elem-status-kind{flex:0 0 92px;font-weight:700;color:var(--mute)}
+  .elem-status-value{font-size:13.5px;font-weight:750}
+  .elem-status-value.ok{color:var(--accent)}
+  .elem-status-value.pending{color:var(--accent)}
+  .elem-status-value.off{color:var(--mute)}
+  .elem-status-value.warn{color:var(--warn)}
+  .elem-status-detail{font-size:12px;color:var(--mute);flex:1 1 145px}
   .elink{border-style:dashed}
   .elink b{position:absolute; left:0; right:0; bottom:0; font-size:9.5px; font-weight:700; color:#fff;
     background:rgba(0,0,0,.62); text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
@@ -1184,6 +1194,7 @@
       var key=esc(el.key),photos=elemPhotos(el),used=sharedUsageSummary(el);
       h+='<div class="elem shared-entry" data-shared-entry="'+key+'">'+
         '<b>'+esc(el.name)+'</b>'+
+        elemStatusRows({elements:[]},el)+
         '<p class="hint" style="margin:4px 0">Kling 정식 등록 완료 · ID '+esc(el.kling.elementId)+
         (used.length?' · 사용 중인 숙소 '+used.length+'곳':' · 현재 사용 중인 숙소 없음')+'</p>'+
         '<div class="elem-ph">';
@@ -3470,6 +3481,51 @@
     return "new";
   }
 
+  // 일반 요소의 사용 가능 여부와 Kling 서버의 정식 등록 여부는 별개이다.
+  // 사진 한 장만 있는 요소는 일반 사진 레퍼런스로 즉시 사용할 수 있다.
+  function elemStatusDetails(proj, el){
+    var st=elemState(proj,el), k=(el && el.kling)||{};
+    var general=st!=="draft";
+    var registered=k.status==="ready" && !!k.elementId && k.sig===elemSig(el);
+    var formal={label:"미등록",tone:"off",detail:""};
+    if(registered){
+      formal={label:"등록 완료",tone:"ok",
+        detail:el.scope==="global" ? "모든 숙소에서 같은 Kling 요소 ID 사용" :
+          "영상화에서 정식 Kling 요소 ID 사용"};
+    }else if(k.status==="pending"){
+      formal={label:"등록 중",tone:"pending",detail:"Kling 서버 등록을 기다리는 중"};
+    }else if(k.status==="failed"){
+      formal={label:"등록 실패",tone:"warn",
+        detail:k.msg ? String(k.msg).slice(0,130) : "다시 등록할 수 있어요"};
+    }else if(k.status==="ready"){
+      formal={label:"재등록 필요",tone:"warn",
+        detail:"등록 당시와 사진 구성이 달라졌어요"};
+    }else if(!general){
+      formal.detail="이름과 기준 사진부터 등록해주세요";
+    }else if(!(el.angles||[]).length){
+      formal.detail="추가 각도 사진 1장 이상 필요 · 일반 요소는 이미 사용 가능";
+    }else{
+      formal.detail="정식 등록 가능 · Kling 등록 버튼을 누르세요";
+    }
+    return {general:general,formal:formal,state:st};
+  }
+  function elemStatusRows(proj, el){
+    var info=elemStatusDetails(proj,el);
+    return '<div class="elem-statuses" aria-label="요소 등록 상태">'+
+      '<div class="elem-status-line">'+
+        '<span class="elem-status-kind">일반 요소</span>'+
+        '<strong class="elem-status-value '+(info.general?'ok':'warn')+'">'+
+          (info.general?'✓ 등록 완료 · 사용 가능':'준비 필요')+'</strong>'+
+        '<span class="elem-status-detail">'+
+          (info.general?'사진 가공·영상화에서 ['+esc(el.name)+'] 사용 가능':'이름과 기준 사진 1장 필요')+
+        '</span></div>'+
+      '<div class="elem-status-line">'+
+        '<span class="elem-status-kind">Kling 정식 요소</span>'+
+        '<strong class="elem-status-value '+info.formal.tone+'">'+esc(info.formal.label)+'</strong>'+
+        '<span class="elem-status-detail">'+esc(info.formal.detail)+'</span>'+
+      '</div></div>';
+  }
+
   // ---------- [이름] 부르기 ----------
   // 프롬프트의 [원본] [가공] [레퍼런스N] [요소이름] 을 찾는다. 보낼 때 단계별 태그로 바꾼다.
   // 사용자는 태그를 볼 일이 없다.
@@ -4164,8 +4220,9 @@
     if(photo)h+='<div class="eref" style="width:48px;height:48px;flex:0 0 48px">'+
       previewImg(blobUrl(photo.id),el.name)+"</div>";
     h+='<div style="min-width:0;flex:1"><b>'+esc(el.name)+'</b>'+
-      '<div class="hint">공통 · Kling 정식 등록 완료'+(el.desc ? " · "+esc(el.desc) : "")+
-      '</div></div></div>';
+      elemStatusRows(current,el)+
+      (el.desc ? '<p class="hint">'+esc(el.desc)+'</p>' : '')+
+      '</div></div>';
     return h;
   }
   function elemCard(el){
@@ -4189,22 +4246,13 @@
       '</div>';
     return h+'<div data-elstate="'+key+'">'+elemStateHtml(el)+'</div></div>';
   }
-  // 등록 상태 · 버튼 · 오류. 사진만 있어도 가공/영상화 참조 가능.
+  // 같은 요소 카드에 일반 사용 가능 상태와 정식 Kling 등록 상태를 별도 표시.
   function elemStateHtml(el){
-    var st=elemState(current, el), k=el.kling || {}, key=esc(el.key), h='';
-    var label={
-      draft:"요소 이름과 기준 사진을 넣으면 바로 사용할 수 있어요",
-      local:"사진 1장으로 가공·영상화 사용 가능 · Kling 고정 등록은 추가 사진이 필요해요",
-      "new":"사진 참조로 바로 사용 가능 · 원하면 Kling 고정 요소 등록",
-      pending:"사진 참조로 사용 가능 · Kling 고정 요소 등록 중…",
-      ready:"Kling 고정 요소 준비됨",
-      failed:"사진 참조로 사용 가능 · Kling 고정 등록 실패"+(k.msg ? ": "+k.msg : ""),
-      stale:"사진 참조로 사용 가능 · 변경된 사진은 Kling 고정 요소를 다시 등록해야 해요"
-    }[st];
-    var cls=(st==="ready" || st==="local" || st==="new") ? " ok" : (st==="failed" || st==="stale") ? " bad" : "";
-    h+='<div class="elem-k"><span class="st'+cls+'">'+esc(label)+'</span>'+
+    var st=elemState(current, el), key=esc(el.key);
+    var h=elemStatusRows(current,el);
+    h+='<div class="elem-k">'+
       (st==="new" || st==="failed" || st==="stale"
-        ? '<button type="button" class="primary" data-elreg="'+key+'">'+(st==="new" ? "Kling 등록" : "다시 등록")+'</button>' : '')+
+        ? '<button type="button" class="primary" data-elreg="'+key+'">'+(st==="new" ? "Kling 정식 등록" : "Kling 다시 등록")+'</button>' : '')+
       '<button type="button" class="ghost danger" data-eldel="'+key+'">지우기</button></div>';
     if(elemErrors[el.key]) h+='<p class="status bad">'+esc(elemErrors[el.key])+'</p>';
     return h;

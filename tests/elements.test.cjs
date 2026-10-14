@@ -380,6 +380,6 @@ test("elements UI offers a single-photo path, optional description and no catego
   assert.match(section,/설명과 다른 각도/);
   assert.match(section,/카테고리는 따로 고를 필요 없어요/);
   assert.match(card,/설명 \(선택/);
-  assert.match(state,/local:"사진 1장으로 가공·영상화 사용 가능/);
+  assert.match(state,/elemStatusRows\(current,el\)/,"regular/photo and Kling registration states are rendered separately");
   assert.doesNotMatch(section+card,/data-elcategory|data-eltype|카테고리 선택/);
 });

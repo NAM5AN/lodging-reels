@@ -72,6 +72,7 @@ test("library UI renders four actual reference photos and exposes the immutable 
   ctx.esc=(x)=>String(x).replace(/&/g,"&amp;").replace(/</g,"&lt;");
   ctx.blobUrl=(x)=>"https://example.test/"+x;
   ctx.previewImg=(url,txt)=>'<img data-preview="'+url+'" alt="'+txt+'">';
+  ctx.elemStatusRows=()=>'<div class="elem-statuses">일반 요소 · 등록 완료 · 사용 가능 / Kling 정식 요소 · 등록 완료</div>';
   funcs(ctx,["sharedManagementSection(){"]);
   const h=ctx.sharedManagementSection();
   assert.match(h,/Kling 정식 등록 1개/);
