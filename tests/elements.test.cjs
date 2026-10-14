@@ -46,7 +46,7 @@ function sandbox(proj, replies){
   const calls=[], deleted=[], persisted=[], toasts=[], confirms=[];
   let n=0;
   const sb={
-    current:proj, uid:UID, esc:(v)=>String(v??""), FN:{clip:FN_URL},
+    current:proj, uid:UID, sharedElements:[], esc:(v)=>String(v??""), FN:{clip:FN_URL},
     api:async(url,opts)=>{
       calls.push({url,body:JSON.parse(opts.body)});
       const r=(replies||[]).shift() || {status:200,body:{ok:true}};

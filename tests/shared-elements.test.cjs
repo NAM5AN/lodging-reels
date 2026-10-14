@@ -89,7 +89,7 @@ test("promoting a native Kling registration uploads independent photo copies exa
   let num=0;
   const box=vm.createContext({
     uid:UID,SUPA:{url:FN,sharedTable:"lodging_reels_shared_elements"},
-    sharedElements:[],sharedLoaded:true,sharedLoadError:"",sharedSyncBusy:{},current:p,
+    sharedElements:[],sharedDeletedKeys:[],sharedLoaded:true,sharedLoadError:"",sharedSyncBusy:{},current:p,
     fetch:async(url)=>({ok:true,blob:async()=>({size:300,source:url})}),
     blobUrl:(id)=>FN+"/storage/v1/object/public/lodging-reels/"+id,
     storeUpload:async(id,blob,type)=>{uploaded.push({id,blob,type});return {id,sizeBytes:blob.size};},
@@ -123,7 +123,7 @@ test("a failed account save cleans up newly copied photos without deleting sourc
     kling:{status:"ready",elementId:"991882",sig:s1+"|"+s2}};
   const p=project("hotelA",[el]),box=vm.createContext({
     uid:UID,SUPA:{url:FN,sharedTable:"lodging_reels_shared_elements"},
-    sharedElements:[],sharedLoaded:true,sharedSyncBusy:{},current:p,
+    sharedElements:[],sharedDeletedKeys:[],sharedLoaded:true,sharedSyncBusy:{},current:p,
     fetch:async()=>({ok:true,blob:async()=>({size:5})}),
     blobUrl:(id)=>FN+"/"+id,
     newPath:(_p,_k,_e)=>SHARED+"new"+Math.random()+".jpg",
