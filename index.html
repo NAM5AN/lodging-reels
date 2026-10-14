@@ -639,10 +639,10 @@
       sharedElements=rows.filter(function(row){return !(row.data && row.data.deleted===true);})
         .map(function(row){return Object.assign({},row.data||{},
           {key:row.element_key,name:row.name,scope:"global"});})
-        .filter(function(el){return el.kling && el.kling.elementId;});
+        .filter(function(el){return el.name && el.front && el.front.id;});
       sharedLoaded=true;sharedLoadError="";
       // 재등록 중/실패한 공통 요소도 유지하고, 메인 화면에서도 상태 확인을 재개한다.
-      if(sharedElements.some(function(el){return el.kling.status==="pending";}) && typeof ensureClipPoll==="function")ensureClipPoll();
+      if(sharedElements.some(function(el){return el.kling && el.kling.status==="pending";}) && typeof ensureClipPoll==="function")ensureClipPoll();
       return true;
     }catch(e){
       sharedLoadError="공통 요소를 불러오지 못했어요: "+((e&&e.message)||e);
@@ -755,7 +755,7 @@
       [el.front].concat(el.angles||[],el.retiredPhotos||[]).forEach(function(x){ if(x && x.id) ids.push(x.id); });
       // 계정 공통 요소로 보관된 Kling ID는 숙소를 지워도 남겨야 한다.
       if(el.kling && el.kling.elementId && sharedLoaded &&
-         !sharedElements.some(function(g){return String(g.kling.elementId)===String(el.kling.elementId) || (g.retiredElementIds||[]).indexOf(String(el.kling.elementId))>=0;}))
+         !sharedElements.some(function(g){return (g.kling && String(g.kling.elementId)===String(el.kling.elementId)) || (g.retiredElementIds||[]).indexOf(String(el.kling.elementId))>=0;}))
         klingElementDelete(el.kling.elementId);
     });
     Object.keys(p.editSpecs||{}).forEach(function(k){
@@ -1123,7 +1123,7 @@
     }
   }
 
-  // ---------- 계정 공통 Kling 정식 요소 라이브러리 (메인 페이지) ----------
+  // ---------- 계정 공통 요소 라이브러리 (메인 페이지) ----------
   // 사진 변경은 일반 참조에 먼저 반영한다. Kling 정식 재등록은 별도 확인 후 실행한다.
   function sharedUsageSummary(el){
     var aliases=[el.name].concat(el.aliases||[]), out=[];
@@ -1217,11 +1217,13 @@
     var all=sharedElements||[], ready=all.filter(function(el){return elemState({elements:[]},el)==="ready";}).length;
     var h='<h2>계정 공통 요소 관리 <small data-shared-count style="font-size:13px;color:var(--mute)">Kling 정식 등록 '+ready+'개 · 전체 '+all.length+'개</small></h2>'+
       '<div class="card" id="sharedLibrary">'+
-      '<p class="hint" style="margin:0 0 10px">⑨에서 정식 등록 후 공통 보관한 요소예요. 재등록 대기·실패 항목도 여기에 남아요. '+
-      '모든 숙소에서 같은 요소를 사용해요. 사진을 바꾸면 일반 참조에 먼저 반영되고, 정식 재등록은 별도로 눌러야 해요. 이름·설명만 수정할 때는 재등록하지 않아요.</p>';
+      '<p class="hint" style="margin:0 0 10px">메인에서 이름과 사진 한 장으로 공통 요소를 바로 등록할 수 있어요. 모든 숙소에서 [이름]·@로 사용해요. '+
+      'Kling 정식 등록은 다른 각도 사진을 추가한 뒤 별도로 실행하며, 요금이 발생할 수 있어요.</p>'+
+      '<button type="button" class="primary" id="addshared" style="width:100%;margin:0 0 10px"'+
+      (!sharedLoaded||!uid?' disabled':'')+'>+ 새 공통 요소 등록</button>';
     if(sharedLoadError)h+='<p class="status bad">'+esc(sharedLoadError)+'</p>';
     if(!sharedLoaded)h+='<p class="hint">공통 요소를 불러오는 중이에요. 다시 불러오기를 눌러주세요.</p>';
-    else if(!all.length)h+='<p class="hint">아직 정식 등록된 공통 요소가 없어요. 숙소 ⑨에서 Kling 등록을 완료하면 여기에 자동으로 나타나요.</p>';
+    else if(!all.length)h+='<p class="hint">아직 공통 요소가 없어요. 위의 ‘새 공통 요소 등록’을 눌러 사진부터 등록해주세요.</p>';
     all.forEach(function(el){
       var key=esc(el.key),photos=elemPhotos(el),used=sharedUsageSummary(el);
       h+='<div class="elem shared-entry" data-shared-entry="'+key+'">'+
@@ -1248,7 +1250,7 @@
         '</details>'+
         '<div class="elem-k"><button type="button" class="ghost danger" data-shared-delete="'+key+
           '"'+(used.length?' disabled title="사용 중인 숙소의 프롬프트를 먼저 지워주세요"':'')+
-          '>정식 요소 삭제</button>'+
+          '>'+(el.kling&&el.kling.elementId?'정식 요소 삭제':'공통 요소 삭제')+'</button>'+
           (used.length?'<span class="st">사용 중이므로 삭제하려면 먼저 숙소 프롬프트에서 제거해야 해요.</span>':'')+
         '</div><p class="status" data-shared-status="'+key+'"></p></div>';
     });
@@ -1256,6 +1258,8 @@
     return h;
   }
   function bindSharedManagement(){
+    var add=document.getElementById("addshared");
+    if(add)add.addEventListener("click",function(){if(!sharedManageBusy)sharedCreateDialogOpen();});
     var refresh=document.getElementById("refreshshared");
     if(refresh)refresh.addEventListener("click",async function(){
       if(sharedManageBusy)return;
@@ -1286,16 +1290,18 @@
         if(sharedManageBusy)return;
         var key=btn.dataset.sharedDelete,el=sharedElements.find(function(x){return x.key===key;});
         if(!el)return;
-        var msg="「"+el.name+"」 정식 Kling 요소를 계정 전체에서 삭제할까요?\n"+
-          "모든 숙소에서 사라지고 Kling 서버 등록과 공통 사진도 삭제돼요.\n"+
-          "복구할 수 없으며 나중에 다시 등록하면 요금이 발생할 수 있어요.";
+        var hasKling=!!(el.kling && el.kling.elementId);
+        var msg="「"+el.name+"」 "+(hasKling?"정식 Kling 요소":"공통 요소")+"를 계정 전체에서 삭제할까요?\n"+
+          (hasKling?"모든 숙소에서 사라지고 Kling 서버 등록과 공통 사진도 삭제돼요.\n":
+            "모든 숙소에서 사라지고 공통 사진이 삭제돼요.\n")+
+          "복구할 수 없으며 나중에 정식 Kling 등록을 진행하면 요금이 발생할 수 있어요.";
         if(!confirm(msg))return;
         var status=btn.closest("[data-shared-entry]").querySelector("[data-shared-status]");
         sharedManageBusy=true;btn.disabled=true;
         try{
           var warnings=await deleteSharedRegistered(key);
           renderList();
-          toast(warnings.length?"공통 요소는 삭제했지만 일부 정리 실패가 있어요":"정식 요소를 삭제했어요");
+          toast(warnings.length?"공통 요소는 삭제했지만 일부 정리 실패가 있어요":"공통 요소를 삭제했어요");
           if(warnings.length){
             var lib=document.getElementById("sharedLibrary");
             if(lib)lib.insertAdjacentHTML("afterbegin",'<p class="status bad">'+
@@ -4164,7 +4170,8 @@
     return '<div data-shared-live="'+esc(el.key)+'">'+elemStatusRows({elements:[]},el)+
       (k.elementId?'<p class="hint">'+(st==="ready"?'현재 정식 ID ':'이전 정식 ID (새 사진에는 사용 안 함) ')+esc(k.elementId)+'</p>':'')+
       ((st==="stale"||st==="failed"||st==="new") && (el.angles||[]).length?
-        '<button type="button" data-shared-register="'+esc(el.key)+'">Kling 정식 다시 등록</button>':'')+
+        '<button type="button" data-shared-register="'+esc(el.key)+'">'+
+        (st==="new"?"Kling 정식 등록":"Kling 정식 다시 등록")+'</button>':'')+
       ((st!=="ready" && st!=="pending" && !(el.angles||[]).length)?'<p class="hint">정식 재등록에는 다른 각도 사진 1장 이상이 필요해요. 일반 참조는 사용 가능해요.</p>':'')+
       (elemErrors[el.key]?'<p class="status bad">'+esc(elemErrors[el.key])+'</p>':'')+'</div>';
   }
@@ -4183,7 +4190,8 @@
     var st=elemState({elements:[]},el);
     if(st==="ready")return;
     if(st==="draft" || !(el.angles||[]).length){toast("기준 사진과 다른 각도 사진 1장 이상이 필요해요");return;}
-    if(!confirm("「"+el.name+"」의 변경된 사진으로 Kling 정식 요소를 다시 등록할까요?\n등록·생성 요금이 발생할 수 있어요. 일반 사진 참조는 재등록 없이도 사용할 수 있어요."))return;
+    var initial=!(el.kling && el.kling.elementId);
+    if(!confirm("「"+el.name+"」를 Kling 정식 요소로 "+(initial?"등록":"다시 등록")+"할까요?\n등록·생성 요금이 발생할 수 있어요. 일반 사진 참조는 정식 등록 없이도 사용할 수 있어요."))return;
     elemInflight[key]=true;delete elemErrors[key];
     var job={status:"pending",elementId:el.kling&&el.kling.elementId,taskId:null,sig:elemSig(el),at:Date.now()},saved=false;
     try{
@@ -4458,7 +4466,7 @@
         }
         if(k.prevElementId && k.prevElementId!==String(j.elementId) &&
            !(typeof sharedElements!=="undefined" && sharedElements.some(function(g){
-             return String(g.kling.elementId)===String(k.prevElementId);
+             return g.kling && String(g.kling.elementId)===String(k.prevElementId);
            }))) klingElementDelete(k.prevElementId);
         if(current===proj) toast("「"+el.name+"」 Kling 등록이 끝났어요"+(savedShared?" · 계정 공통 보관 완료":" · 공통 보관 확인 필요"));
       }else{
@@ -4480,10 +4488,10 @@
       '사진을 추가하면 Kling 고정 요소로도 등록할 수 있어요. 카테고리는 따로 고를 필요 없어요.</p>';
     h+='<div style="margin:12px 0 8px;padding:10px;border:1px dashed var(--line);border-radius:10px">'+
       '<b style="font-size:14px">계정 공통 요소 · 모든 숙소에서 사용</b>'+
-      '<p class="hint" style="margin:4px 0">정식 Kling 등록 완료 시 여기에 자동 저장돼요. 다른 숙소에서도 [이름]·@ 로 바로 사용해요. '+
-      '다른 숙소에서 재사용할 때 다시 업로드하지 않아요. 사진을 바꾼 경우만 별도로 정식 재등록해요. 원래 숙소를 삭제해도 유지돼요.</p>';
+      '<p class="hint" style="margin:4px 0">메인 페이지에서 등록한 공통 요소도 여기에 표시돼요. 다른 숙소에서도 [이름]·@ 로 바로 사용해요. '+
+      '숙소별 재업로드는 필요 없어요. Kling 정식 등록은 선택사항이고 원래 숙소를 삭제해도 공통 요소는 유지돼요.</p>';
     if(sharedLoadError) h+='<p class="status bad">'+esc(sharedLoadError)+'</p>';
-    if(!global.length) h+='<p class="hint" style="margin:6px 0">아직 정식으로 등록된 공통 요소가 없어요.</p>';
+    if(!global.length) h+='<p class="hint" style="margin:6px 0">아직 등록된 공통 요소가 없어요. 메인 페이지에서 추가할 수 있어요.</p>';
     global.forEach(function(el){h+=sharedElementCard(el);});
     h+='</div>';
     if(els.length) h+='<p class="elab" style="margin:12px 0 4px">이 숙소의 개별 요소</p>';
