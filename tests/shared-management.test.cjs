@@ -34,14 +34,14 @@ function funcs(ctx,sigs){
 function pure(extra={}){
   const ctx=Object.assign({
     uid:UID,sharedElements:[],sharedDeletedKeys:[],sharedLoaded:true,
-    sharedLoadError:"",sharedSyncBusy:{},sharedManageBusy:false,
+    sharedLoadError:"",sharedSyncBusy:{},sharedManageBusy:false,elemInflight:{},elemPhotoBusy:{},elemErrors:{},
     projects:[],ELEM:{nameMax:20,descMax:100,maxAngles:3},
     SUPA:{url:"https://example.supabase.co",bucket:"lodging-reels",sharedTable:"lodging_reels_shared_elements"},
     FN:{clip:"https://example.supabase.co/functions/v1/lodging-reels-clip"},
   },extra);
   return funcs(ctx,[
     "elemList(proj){","elemByKey(proj, key){","elemByName(proj, name){",
-    "elemPhotos(el){","elemSig(el){","elemNameProblem(proj, name, selfKey){",
+    "elemPhotos(el){","elemSig(el){","elemState(proj, el){","elemPhotoLocked(el){","sharedRegistrationHtml(el){","elemNameProblem(proj, name, selfKey){",
     "sharedUsageSummary(el){","sharedNameProblem(el, name){",
     "updateSharedMetadata(key, name, desc){","sharedDeletedLabel(){",
     "deleteSharedRegistered(key){"
@@ -68,6 +68,7 @@ test("main page displays registered-elements management between fonts and lodgin
 
 test("library UI renders four actual reference photos and exposes the immutable Kling ID",()=>{
   const el=globalElement({angles:[{id:ANGLE},{id:FRONT+"3"},{id:FRONT+"4"}]});
+  el.kling.sig=[el.front,...el.angles].map(p=>p.id).join("|");
   const ctx=pure({sharedElements:[el],projects:[project("hotelB")]});
   ctx.esc=(x)=>String(x).replace(/&/g,"&amp;").replace(/</g,"&lt;");
   ctx.blobUrl=(x)=>"https://example.test/"+x;
