@@ -35,6 +35,7 @@ function harness(opts={}){
       const body=options.body?JSON.parse(options.body):undefined;
       calls.push({url,method:options.method||"GET",body});
       if(opts.fail){const response=opts.fail(url,options,body);if(response)return response;}
+      if(url.includes("/storage/v1/object/") && options.method==="DELETE")return{ok:true};
       if(url.includes("/rest/v1/shared")){
         if(!options.method)return {ok:true,json:async()=>[...db.values()].map(r=>clone(r))};
         if(options.method==="POST"){
