@@ -1148,6 +1148,155 @@
     }
     return "";
   }
+  // 메인에서 숙소 생성 없이 공통 요소를 등록한다. Kling 유료 등록은 여기서 절대 실행하지 않는다.
+  var sharedCreateBusy=false, sharedCreateEditor=null;
+  async function createSharedElement(name, desc, items){
+    if(!uid || !sharedLoaded)throw new Error("로그인하고 공통 요소를 불러온 뒤 등록해주세요.");
+    if(sharedCreateBusy || sharedManageBusy)throw new Error("다른 공통 요소 작업이 끝나면 다시 시도해주세요.");
+    name=String(name||"").trim();desc=String(desc||"").trim();
+    var key="common_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,12);
+    var problem=sharedNameProblem({key:key},name);
+    if(problem)throw new Error(problem);
+    if(desc.length>ELEM.descMax)throw new Error("설명은 "+ELEM.descMax+"자까지예요.");
+    if(!Array.isArray(items) || !items.length || items.length>1+ELEM.maxAngles)
+      throw new Error("기준 사진 1장 이상, 전체 사진은 최대 4장까지 등록할 수 있어요.");
+    for(var photo of items){
+      if(!photo.blob || !Number.isFinite(photo.w) || !Number.isFinite(photo.h) ||
+         Math.min(photo.w,photo.h)<ELEM.minSide ||
+         Math.max(photo.w,photo.h)/Math.min(photo.w,photo.h)>ELEM.maxRatio)
+        throw new Error("사진 크기나 비율을 다시 확인해주세요.");
+    }
+    var owner=uid,uploaded=[],committed=false,saveAttempted=false,safeToCleanup=true;
+    sharedCreateBusy=true;
+    try{
+      var photos=[];
+      for(var item of items){
+        if(uid!==owner)throw new Error("계정이 변경됐어요. 다시 로그인해주세요.");
+        var up=await storeUpload(newPath("_shared_elements","element","jpg"),item.blob,"image/jpeg");
+        uploaded.push(up.id);photos.push({id:up.id,w:item.w,h:item.h,size:up.sizeBytes});
+      }
+      if(uid!==owner)throw new Error("계정이 변경됐어요. 다시 로그인해주세요.");
+      var laterProblem=sharedNameProblem({key:key},name);
+      if(laterProblem)throw new Error(laterProblem);
+      var common={key:key,scope:"global",name:name,aliases:[],desc:desc,
+        front:photos[0],angles:photos.slice(1),kling:{status:"unregistered"},
+        createdAt:Date.now(),revision:Date.now().toString(36)+"_"+Math.random().toString(36).slice(2)};
+      // 단순 INSERT. 다른 등록 자료를 upsert로 덮어쓰지 않는다.
+      saveAttempted=true;safeToCleanup=false;
+      var r=await api(SUPA.url+"/rest/v1/"+SUPA.sharedTable,{
+        method:"POST",headers:{"Content-Type":"application/json",Prefer:"return=representation"},
+        body:JSON.stringify({owner:owner,element_key:key,name:name,data:common})
+      });
+      if(!r.ok){
+        var msg=(await r.text()).slice(0,200);
+        var err=new Error(r.status===409?"같은 이름의 다른 공통 요소가 있어요. 이름을 구분해주세요.":msg||("HTTP "+r.status));
+        err.safeToCleanup=r.status>=400 && r.status<500;throw err;
+      }
+      var rows=await r.json();
+      if(!Array.isArray(rows) || !rows.length)
+        throw new Error("저장 결과를 확인하지 못했어요. 새로고침해 중복 등록 여부를 확인해주세요.");
+      committed=true;
+      if(uid!==owner)throw new Error("저장은 됐지만 계정이 변경됐어요. 다시 로그인해 확인해주세요.");
+      sharedElements.unshift(common);sharedLoaded=true;
+      return common;
+    }catch(e){safeToCleanup=!saveAttempted || !!e.safeToCleanup;throw e;
+    }finally{
+      // 저장 응답만 사라졌다면 사진이 이미 DB에 연결돼 있을 수 있으므로 보존한다.
+      if(!committed && safeToCleanup && uid===owner){
+        for(var id of uploaded){try{await storeDelete(id);}catch(e){console.warn("미저장 공통 요소 사진 정리 실패",e);}}
+      }
+      sharedCreateBusy=false;
+    }
+  }
+  function sharedCreateDialogClose(){
+    var ed=sharedCreateEditor;if(!ed || ed.busy)return;
+    ed.urls.forEach(function(url){URL.revokeObjectURL(url);});
+    ed.dialog.close();ed.dialog.remove();sharedCreateEditor=null;
+  }
+  function sharedCreateDialogDraw(){
+    var ed=sharedCreateEditor;if(!ed)return;
+    var h="";
+    ed.items.forEach(function(p,i){
+      h+='<div class="element-photo-draft"><img src="'+esc(p.preview)+'" alt="'+(i?"다른 각도 "+i:"기준 사진")+'">'+
+        '<strong>'+(i?"다른 각도 "+i:"기준 사진")+'</strong><div class="element-photo-tools">'+
+        (i?'<button type="button" data-shared-create-front="'+i+'">기준으로</button>':'')+
+        '<button type="button" data-shared-create-remove="'+i+'">삭제</button></div></div>';
+    });
+    ed.dialog.querySelector('[data-shared-create-grid]').innerHTML=
+      h||'<p class="hint">사진을 선택해주세요. 첫 장은 기준 사진으로 사용해요.</p>';
+    ed.dialog.querySelector('[data-shared-create-pick]').disabled=ed.items.length>=1+ELEM.maxAngles;
+  }
+  function sharedCreateDialogOpen(){
+    if(sharedCreateEditor || sharedCreateBusy || sharedManageBusy)return;
+    if(!uid || !sharedLoaded){toast("공통 요소를 새로고침한 뒤 등록해주세요.");return;}
+    var dialog=document.createElement("dialog");dialog.className="element-photo-dialog";
+    dialog.setAttribute("aria-label","새 계정 공통 요소 등록");
+    dialog.innerHTML='<h2>새 공통 요소 등록</h2>'+
+      '<p class="hint">이름과 사진 1장만 있어도 모든 숙소에서 일반 요소로 사용해요. '+
+      '다른 각도 사진은 선택사항이며 Kling 정식 등록은 나중에 따로 실행해요.</p>'+
+      '<label class="elab">요소 이름 (필수)</label>'+
+      '<input type="text" data-shared-create-name maxlength="'+ELEM.nameMax+'" placeholder="예: 하린" autocomplete="off" style="width:100%">'+
+      '<label class="elab" style="margin-top:10px">설명 (선택)</label>'+
+      '<input type="text" data-shared-create-desc maxlength="'+ELEM.descMax+'" placeholder="예: 흰 셔츠를 입은 사람" autocomplete="off" style="width:100%">'+
+      '<p class="hint">사진은 최대 4장. 첫 장이 기준 사진이며 ‘기준으로’를 눌러 변경할 수 있어요.</p>'+
+      '<div class="element-photo-grid" data-shared-create-grid></div>'+
+      '<input class="sr" type="file" accept="image/*" multiple data-shared-create-file>'+
+      '<button type="button" data-shared-create-pick>+ 사진 선택 (최대 4장)</button>'+
+      '<p class="status" role="status" aria-live="polite" data-shared-create-status></p>'+
+      '<div class="element-photo-actions"><button type="button" data-shared-create-cancel>취소</button>'+
+      '<button type="button" class="primary" data-shared-create-save>공통 요소 등록</button></div>';
+    document.body.appendChild(dialog);
+    var ed={dialog:dialog,owner:uid,items:[],urls:[],busy:false};
+    sharedCreateEditor=ed;sharedCreateDialogDraw();
+    dialog.addEventListener("cancel",function(ev){
+      if(ev.target!==dialog)return;ev.preventDefault();sharedCreateDialogClose();
+    });
+    dialog.addEventListener("click",async function(ev){
+      var b=ev.target.closest("button");if(!b || ed.busy)return;
+      var status=dialog.querySelector('[data-shared-create-status]');
+      if(b.hasAttribute("data-shared-create-cancel")){sharedCreateDialogClose();return;}
+      if(b.hasAttribute("data-shared-create-pick")){
+        var input=dialog.querySelector('[data-shared-create-file]');input.value="";input.click();return;
+      }
+      if(b.hasAttribute("data-shared-create-remove")){
+        ed.items.splice(+b.dataset.sharedCreateRemove,1);sharedCreateDialogDraw();return;
+      }
+      if(b.hasAttribute("data-shared-create-front")){
+        ed.items.unshift(ed.items.splice(+b.dataset.sharedCreateFront,1)[0]);sharedCreateDialogDraw();return;
+      }
+      if(b.hasAttribute("data-shared-create-save")){
+        ed.busy=true;dialog.classList.add("busy");status.className="status";status.textContent="공통 요소 등록 중…";
+        try{
+          if(uid!==ed.owner)throw new Error("계정이 변경됐어요. 다시 로그인해주세요.");
+          var name=dialog.querySelector('[data-shared-create-name]').value;
+          var desc=dialog.querySelector('[data-shared-create-desc]').value;
+          var created=await createSharedElement(name,desc,ed.items);
+          ed.busy=false;sharedCreateDialogClose();
+          renderList();toast("「"+created.name+"」 공통 요소 등록 완료 · 모든 숙소에서 사용 가능");
+        }catch(e){status.className="status bad";status.textContent=(e&&e.message)||"공통 요소 등록 실패";}
+        finally{ed.busy=false;dialog.classList.remove("busy");}
+      }
+    });
+    dialog.querySelector('[data-shared-create-file]').addEventListener("change",async function(ev){
+      var files=Array.from(ev.target.files||[]);if(!files.length)return;
+      var status=dialog.querySelector('[data-shared-create-status]'),batch=[],urls=[];
+      ed.busy=true;dialog.classList.add("busy");
+      try{
+        if(files.length+ed.items.length>1+ELEM.maxAngles)throw new Error("사진은 전체 4장까지예요.");
+        for(var file of files){
+          if(uid!==ed.owner)throw new Error("계정이 변경됐어요. 다시 로그인해주세요.");
+          var p=await elemPreparedPhoto(file);p.preview=URL.createObjectURL(p.blob);
+          batch.push(p);urls.push(p.preview);
+        }
+        ed.items.push.apply(ed.items,batch);ed.urls.push.apply(ed.urls,urls);urls=[];
+        status.className="status";status.textContent="아직 저장 전이에요. ‘공통 요소 등록’을 눌러주세요.";
+        sharedCreateDialogDraw();
+      }catch(e){status.className="status bad";status.textContent=(e&&e.message)||"사진 읽기 실패";}
+      finally{urls.forEach(function(url){URL.revokeObjectURL(url);});ed.busy=false;dialog.classList.remove("busy");}
+    });
+    dialog.showModal();dialog.querySelector('[data-shared-create-name]').focus();
+  }
+
   async function updateSharedMetadata(key, name, desc){
     if(!sharedLoaded||!uid)throw new Error("계정 공통 요소를 불러오지 못했어요.");
     var el=sharedElements.find(function(x){return x.key===key;});
