@@ -1,0 +1,22 @@
+name: Element editor workspace
+on:
+  push:
+    branches: [work/elements-photo-edit-20261014]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elements-source
+          path: |
+            index.html
+            package.json
+            reels-media.js
+            api/
+            tests/
+            supabase/
+          retention-days: 1
