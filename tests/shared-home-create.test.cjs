@@ -16,6 +16,7 @@ function harness(opts={}){
   const ctx=vm.createContext({
     uid:UID,sharedLoaded:true,sharedLoadError:"",sharedManageBusy:false,sharedCreateBusy:false,
     sharedElements:[],sharedDeletedKeys:[],sharedSyncBusy:{},sharedCreateEditor:null,
+    elemErrors:{},elemPhotoBusy:{},elemInflight:{},
     projects:opts.projects||[{id:"hotelA",name:"호텔 A",elements:[],editSpecs:{}}],
     ELEM:{nameMax:20,descMax:100,maxAngles:3,minSide:300,maxRatio:2.5,giveUpMs:1800000},
     SUPA:{url:"https://test.supabase.co",bucket:"assets",sharedTable:"shared"},
