@@ -177,7 +177,10 @@
   .tbox{margin-top:12px}
   .tprev{position:relative; max-width:260px; margin:0 auto;
     border:1px solid var(--line); border-radius:12px; overflow:hidden; background:#000}
-  .tprev img{width:100%; display:block}
+  .tprev img,.tprev canvas{width:100%; height:auto; display:block}
+  .thumb-scrub{width:100%; margin:10px 0 4px; accent-color:var(--accent)}
+  .thumb-caption{display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:12px; color:var(--mute)}
+  .thumb-caption output{font-weight:700; font-variant-numeric:tabular-nums; color:var(--ink)}
   /* 인스타 그리드는 가운데 1:1 만 보여준다. 그 범위를 표시해준다. */
   .tprev .sq{position:absolute; left:0; right:0; top:21.875%; height:56.25%;
     border:2px dashed rgba(255,255,255,.75); pointer-events:none}
@@ -1405,11 +1408,24 @@
     h+='<p class="hint" style="margin-bottom:10px">자막은 ⑦에서 계산한 발화 시각에 표시돼요. ⑩에서 선택한 사진에 유효한 ⑨ Kling 영상이 있으면 MP4를 우선 사용하고, 없거나 가공 사진이 변경됐으면 사진을 사용해요. '+
        '같은 사진의 연속 컷은 영상을 이어 재생하며, 클립 길이가 부족한 부분은 반복 없이 마젠타(#FF00FF) 단색으로 표시하고 자막은 유지해요. Kling 오디오는 넣지 않아요.</p>';
     h+=trackRow({k:"bgm",h:"배경음악",hint:"영상 길이에 맞춰 반복 재생돼요."});
-    h+='<div style="display:flex;gap:8px;margin-top:12px">'+
-         '<button type="button" id="mkthumb" style="flex:1">썸네일 보기</button>'+
-         '<button type="button" class="primary" id="mkvideo" style="flex:1">영상 만들기</button>'+
-       '</div>'+
-       '<div class="tbox" id="thumbbox"></div>'+
+    h+='<div class="tbox" id="thumbbox"><h3 style="margin:0 0 8px">썸네일 프레임 선택</h3>'+
+       '<p class="hint" style="margin:0 0 8px">⑪ 전체 영상에서 원하는 시점을 고르세요. Kling 영상·사진·마젠타 구간 모두 선택할 수 있어요. '+
+       '미리보기와 저장 파일에는 자막 및 커버 문구가 들어가지 않아요.</p>';
+    if(timelineReady() && (current.photos||[]).length){
+      var total=thumbnailDuration(current), selected=thumbnailSelectedTime(current);
+      h+='<label for="thumbtime" class="elab">전체 영상에서 프레임 위치</label>'+
+         '<input class="thumb-scrub" id="thumbtime" type="range" min="0" max="'+thumbnailLastFrame(current)+'" step="'+(1/VIDEO.fps).toFixed(6)+'" value="'+selected+'" aria-label="썸네일 프레임 위치">'+
+         '<div class="thumb-caption"><output id="thumbtimevalue" for="thumbtime">'+thumbClock(selected)+'</output>'+
+         '<span>전체 '+thumbClock(total)+'</span></div>'+
+         '<div class="tprev" style="margin-top:10px"><canvas id="thumbframe" width="'+VIDEO.w+'" height="'+VIDEO.h+'" aria-label="자막 없는 썸네일 미리보기"></canvas>'+
+         '<div class="sq"><b>인스타 그리드 1:1 범위</b></div></div>'+
+         '<p class="status" id="thumbstat">선택한 프레임을 불러오는 중...</p>'+
+         '<button type="button" id="savethumb" style="width:100%;margin-top:8px">선택한 프레임 썸네일 저장</button>';
+    }else{
+      h+='<p class="hint">전체 영상 프레임을 고르려면 ⑦ 음성 싱크와 ⑧ 사진을 먼저 준비해 주세요.</p>';
+    }
+    h+='</div>'+
+       '<button type="button" class="primary" id="mkvideo" style="width:100%;margin-top:12px">영상 만들기</button>'+
        '<p class="status" id="renderstat"></p></div>';
     return h;
   }
@@ -2522,59 +2538,174 @@
     drawCutText(g,text);
   }
 
-  // ---------- 썸네일 따로 보기 / 따로 저장 ----------
-  var thumbBlob=null, thumbUrl=null;
-
-  async function drawCoverTo(canvas){
-    var photos=current.photos||[];
-    if(!photos.length) throw new Error("no_photo");
-    if(fontsReady.cover){
-      try{ await document.fonts.load('176px "ReelCover"'); }catch(e){}
+  // ---------- ⑪ 전체 영상 타임라인에서 자막 없는 썸네일 프레임 선택 ----------
+  // 프로젝트별 시간(thumbTime)은 기존 프로젝트 JSON에 저장한다. 새 API/과금 호출은 없다.
+  function thumbnailDuration(proj){
+    var timeline=(proj && proj.cutTimeline)||[];
+    var last=timeline.length ? Number(timeline[timeline.length-1].end)||0 : 0;
+    var voice=Number(proj && proj.ttsDuration);
+    return VIDEO.coverHold+(Number.isFinite(voice)&&voice>0 ? voice : last);
+  }
+  function thumbnailLastFrame(proj){
+    return Math.max(0,thumbnailDuration(proj)-1/VIDEO.fps);
+  }
+  function thumbnailSelectedTime(proj){
+    var v=Number(proj && proj.thumbTime);
+    if(!proj || proj.thumbTime===undefined || proj.thumbTime===null || !Number.isFinite(v)){
+      v=VIDEO.coverHold+0.5; // 처음에는 커버를 지난 첫 장면에서 선택 시작
     }
-    var ci=(typeof current.coverPhoto==="number" && current.coverPhoto<photos.length)
-           ? current.coverPhoto : 0;
-    var im=await loadImg(blobUrl(srcId(photos[ci])));
-    canvas.width=VIDEO.w; canvas.height=VIDEO.h;
-    var g=canvas.getContext("2d");
-    drawCover(g, im, (current.cover||"").split("\n").map(function(x){return x.trim()}));
+    return Math.max(0,Math.min(thumbnailLastFrame(proj),v));
+  }
+  function thumbClock(time){
+    var v=Math.max(0,Number(time)||0),m=Math.floor(v/60),s=v-m*60;
+    return m+":"+s.toFixed(2).padStart(5,"0");
+  }
+  // 최종 릴스 makeVideo()의 ⑩ 사진 매핑/컷 타임라인/연속 사진 재생 시간과 같은 원리를 사용.
+  function thumbnailFramePlan(proj, time){
+    var photos=(proj && proj.photos)||[], windows=(proj && proj.cutTimeline)||[];
+    if(!photos.length)return null;
+    var at=Math.max(0,Math.min(thumbnailLastFrame(proj),Number(time)||0));
+    var photoSource=function(pi){
+      var p=photos[pi], e=(proj.edits||{})[p.id];
+      return (e && e.id)||p.id;
+    };
+    if(at<VIDEO.coverHold || !windows.length){
+      var ci=(typeof proj.coverPhoto==="number" && proj.coverPhoto>=0 &&
+        proj.coverPhoto<photos.length)?proj.coverPhoto:0;
+      return {kind:"image",path:photoSource(ci),photoIndex:ci,zoom:1,cover:true,time:at};
+    }
+    var rel=at-VIDEO.coverHold, n=windows.length, idx=0;
+    while(idx<n-1 && windows[idx+1].start<=rel)idx++;
+    var map=proj.map||[];
+    var photoIndex=function(i){
+      var v=map[i];
+      return (typeof v==="number" && v>=0 && v<photos.length)
+        ?v:Math.min(photos.length-1,Math.floor(i*photos.length/n));
+    };
+    var pi=photoIndex(idx),from=idx,to=idx;
+    while(from>0 && photoIndex(from-1)===pi)from--;
+    while(to<n-1 && photoIndex(to+1)===pi)to++;
+    var clip=renderClipForPhoto(proj,photos[pi]);
+    if(clip){
+      return {kind:"video",path:clip.id,photoIndex:pi,time:at,
+        elapsed:Math.max(0,rel-windows[from].start),clipDuration:Number(clip.dur)||0,
+        runFrom:from};
+    }
+    var runStart=windows[from].start,runEnd=windows[to].end;
+    var fraction=Math.max(0,Math.min(1,(rel-runStart)/Math.max(0.01,runEnd-runStart)));
+    return {kind:"image",path:photoSource(pi),photoIndex:pi,time:at,
+      zoom:1+0.18*fraction,runFrom:from};
+  }
+  // HTMLVideoElement은 재생하지 않고 seeked로 특정 프레임을 디코딩한다.
+  function seekClipFrame(video, time){
+    return new Promise(function(resolve,reject){
+      var last=Math.max(0,video.duration-1/VIDEO.fps);
+      var target=Math.max(0,Math.min(last,Number(time)||0));
+      if(Math.abs(video.currentTime-target)<0.015 && video.readyState>=2 && !video.seeking){
+        resolve();return;
+      }
+      var done=false;
+      var timer=setTimeout(function(){finish(new Error("선택한 영상 프레임을 불러오는 시간이 초과됐어요."));},12000);
+      function cleanup(){
+        clearTimeout(timer);
+        video.removeEventListener("seeked",check);
+        video.removeEventListener("loadeddata",check);
+        video.removeEventListener("error",fail);
+      }
+      function finish(err){
+        if(done)return;done=true;cleanup();err?reject(err):resolve();
+      }
+      function check(){if(!video.seeking && video.readyState>=2)finish(null);}
+      function fail(){finish(new Error("영상 프레임 디코딩에 실패했어요."));}
+      video.addEventListener("seeked",check);
+      video.addEventListener("loadeddata",check);
+      video.addEventListener("error",fail);
+      try{
+        video.pause();
+        video.currentTime=target;
+        check();
+      }catch(e){finish(e);}
+    });
+  }
+  function drawThumbnailFrame(g, plan, media){
+    // 자막, 커버 제목, 어두운 오버레이는 어떤 경우에도 쓰지 않는다.
+    if(plan.kind==="video"){
+      if(plan.elapsed>=media.duration || media.ended || media.readyState<2 || media.seeking){
+        drawMagentaCut(g,"");return "마젠타";
+      }
+      drawFill(g,media,1,0.5,0.5);
+      return "Kling 영상";
+    }
+    drawFill(g,media,plan.zoom,0.5,0.5);
+    return plan.cover?"커버 구간의 원본 사진":"사진";
   }
 
-  async function makeThumb(){
-    var box=document.getElementById("thumbbox");
-    var st=function(m,bad){var e=document.getElementById("renderstat");
-      if(e){e.textContent=m;e.className="status"+(bad?" bad":"");}};
-    if(!box) return;
-    if(!(current.photos||[]).length){ st("사진을 먼저 올려주세요. 첫 장이 썸네일이 돼요.",true); return; }
-    st("썸네일을 그리는 중...");
-    var cv=document.createElement("canvas");
-    try{ await drawCoverTo(cv); }
-    catch(e){ st("썸네일을 만들지 못했어요.",true); return; }
-
-    var blob=await new Promise(function(res){ cv.toBlob(res,"image/jpeg",0.93); });
-    if(!blob){ st("썸네일을 만들지 못했어요.",true); return; }
-    thumbBlob=blob;
-    if(thumbUrl) URL.revokeObjectURL(thumbUrl);
-    thumbUrl=URL.createObjectURL(blob);
-
-    box.innerHTML='<div class="tprev">'+previewImg(thumbUrl,"완성 썸네일")+
-      '<div class="sq"><b>그리드에 보이는 범위</b></div></div>'+
-      '<p class="hint" style="text-align:center;margin-top:8px">'+
-      VIDEO.w+'×'+VIDEO.h+' · '+(blob.size/1024).toFixed(0)+'KB</p>'+
-      '<button type="button" id="savethumb" style="width:100%;margin-top:8px">썸네일 저장</button>';
-    st("점선 안이 인스타 프로필 그리드에 보이는 부분이에요.");
-
-    var sb=document.getElementById("savethumb");
-    if(sb) sb.addEventListener("click",async function(){
-      if(!downloads){ st("이 화면에서는 저장을 못 해요.",true); return; }
-      if(!thumbBlob){ st("먼저 썸네일 보기를 눌러주세요.",true); return; }
-      sb.disabled=true;
+  var thumbMedia=null,thumbRequestSeq=0,thumbRenderQueue=Promise.resolve(),thumbDebounce=null,thumbProjectId=null;
+  function releaseThumbnailMedia(){
+    if(thumbMedia && thumbMedia.kind==="video")releaseClipVideos([{video:thumbMedia.value}]);
+    thumbMedia=null;
+  }
+  async function thumbnailMediaFor(plan){
+    if(thumbMedia && thumbMedia.path===plan.path && thumbMedia.kind===plan.kind)return thumbMedia.value;
+    releaseThumbnailMedia();
+    var item=plan.kind==="video" ? await loadClipVideo(blobUrl(plan.path))
+                                  : await loadImg(blobUrl(plan.path));
+    thumbMedia={kind:plan.kind,path:plan.path,value:item};
+    return item;
+  }
+  function requestThumbnailFrame(proj, time){
+    var seq=++thumbRequestSeq;
+    // 드래그 중 연속 seek가 충돌하지 않도록 큐로 직렬화하고 지난 요청은 버린다.
+    var pending=thumbRenderQueue.catch(function(){}).then(async function(){
+      if(seq!==thumbRequestSeq || current!==proj)return false;
+      var canvas=document.getElementById("thumbframe");
+      if(!canvas)return false;
+      var plan=thumbnailFramePlan(proj,time);
+      if(!plan)return false;
+      var status=document.getElementById("thumbstat");
+      if(status){status.textContent="프레임 "+thumbClock(time)+" 불러오는 중...";status.className="status";}
       try{
-        await downloads.save({filename:((current.folder||"reels").trim())+"_cover.jpg", data:thumbBlob});
-        st("썸네일을 저장했어요.");
+        var media=await thumbnailMediaFor(plan);
+        if(seq!==thumbRequestSeq || current!==proj || canvas!==document.getElementById("thumbframe"))return false;
+        if(plan.kind==="video" && plan.elapsed<media.duration)await seekClipFrame(media,plan.elapsed);
+        if(seq!==thumbRequestSeq || current!==proj || canvas!==document.getElementById("thumbframe"))return false;
+        var g=canvas.getContext("2d");
+        var label=drawThumbnailFrame(g,plan,media);
+        if(status){status.textContent="프레임 "+thumbClock(time)+" · "+label+" · 자막 없음";status.className="status";}
+        return true;
       }catch(e){
-        st(e&&e.code==="declined"?"취소했어요.":"저장하지 못했어요.",true);
-      }finally{ sb.disabled=false; }
+        if(status && seq===thumbRequestSeq){
+          status.textContent="썸네일 프레임을 불러오지 못했어요: "+((e&&e.message)||e);
+          status.className="status bad";
+        }
+        throw e;
+      }
     });
+    thumbRenderQueue=pending.catch(function(){});
+    return pending;
+  }
+  async function makeThumb(){
+    var btn=document.getElementById("savethumb");
+    var slider=document.getElementById("thumbtime");
+    var canvas=document.getElementById("thumbframe");
+    var status=document.getElementById("thumbstat");
+    if(!btn || !slider || !canvas || !timelineReady())return;
+    var proj=current,time=thumbnailSelectedTime(proj);
+    btn.disabled=true;slider.disabled=true;
+    clearTimeout(thumbDebounce);
+    try{
+      if(!(await requestThumbnailFrame(proj,time)))throw new Error("선택한 화면이 바뀌었어요. 다시 눌러주세요.");
+      if(current!==proj || document.getElementById("thumbframe")!==canvas)throw new Error("프로젝트 화면이 바뀌었어요.");
+      var blob=await new Promise(function(resolve){canvas.toBlob(resolve,"image/jpeg",0.95);});
+      if(!blob)throw new Error("JPG 변환에 실패했어요.");
+      if(!downloads)throw new Error("이 화면에서는 저장을 못 해요.");
+      await downloads.save({filename:((proj.folder||"reels").trim())+"_cover.jpg",data:blob});
+      if(status){status.textContent="자막 없는 썸네일 "+thumbClock(time)+" 프레임을 저장했어요.";status.className="status";}
+    }catch(e){
+      if(status){status.textContent=(e&&e.message)||"썸네일을 저장하지 못했어요.";status.className="status bad";}
+    }finally{
+      if(document.getElementById("savethumb")===btn){btn.disabled=false;slider.disabled=false;}
+    }
   }
 
   function pickMime(){
@@ -3881,11 +4012,35 @@
       el.value=[L[1],L[0]].concat(L.slice(2)).join("\n");
       current.cover=el.value; flushSave(); toast("순서를 바꿨어요");
     });
-    var mt=document.getElementById("mkthumb");
-    if(mt) mt.addEventListener("click",async function(){
-      mt.disabled=true; try{ await makeThumb(); } finally{
-        var b=document.getElementById("mkthumb"); if(b) b.disabled=false; }
-    });
+    // ⑪ 자막 없는 썸네일: 전체 영상 시점을 드래그해서 프레임 미리보기/저장.
+    if(thumbProjectId!==current.id){
+      thumbRequestSeq++;
+      clearTimeout(thumbDebounce);
+      releaseThumbnailMedia();
+      thumbProjectId=current.id;
+    }
+    var thumbSlider=document.getElementById("thumbtime");
+    if(thumbSlider){
+      var thumbProj=current;
+      thumbSlider.addEventListener("input",function(){
+        var seconds=Math.max(0,Math.min(thumbnailLastFrame(thumbProj),Number(thumbSlider.value)||0));
+        thumbProj.thumbTime=seconds;
+        var label=document.getElementById("thumbtimevalue");
+        if(label)label.textContent=thumbClock(seconds);
+        autosave();
+        clearTimeout(thumbDebounce);
+        thumbDebounce=setTimeout(function(){
+          requestThumbnailFrame(thumbProj,seconds).catch(function(){});
+        },80);
+      });
+      thumbSlider.addEventListener("change",flushSave);
+      requestThumbnailFrame(thumbProj,thumbnailSelectedTime(thumbProj)).catch(function(){});
+    }else{
+      // 싱크가 준비되지 않은 프로젝트에서는 오래된 비디오 프레임을 잡고 있지 않는다.
+      thumbRequestSeq++;releaseThumbnailMedia();
+    }
+    var thumbSave=document.getElementById("savethumb");
+    if(thumbSave)thumbSave.addEventListener("click",makeThumb);
     var mv=document.getElementById("mkvideo");
     if(mv) mv.addEventListener("click",async function(){
       mv.disabled=true; try{ await makeVideo(); } finally{

@@ -30,7 +30,9 @@ test("all gallery, original, edited, reference, and rendered-cover photos can be
   assert.match(js,/previewImg\(blobUrl\(p\.id\),\(i\+1\)\+"번 원본"\)/);
   assert.match(js,/previewImg\(blobUrl\(e\.id\),\(i\+1\)\+"번 가공 결과"\)/);
   assert.match(js,/previewImg\(blobUrl\(r\.id\),/);
-  assert.match(js,/previewImg\(thumbUrl,"완성 썸네일"\)/);
+  // ⑪ 썸네일은 전체 영상에서 고른 자막 없는 프레임을 Canvas로 미리 보여 준다.
+  assert.match(js,/id="thumbframe"/);
+  assert.match(js,/class="tprev"/);
   assert.match(js,/view\.addEventListener\("click"/);
   assert.match(js,/view\.addEventListener\("keydown"/);
   assert.match(js,/tabindex="0"/);
