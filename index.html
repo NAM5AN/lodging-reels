@@ -1109,7 +1109,7 @@
     var m=ensureMap();
     var ci=(typeof current.coverPhoto==="number" && current.coverPhoto<ph.length) ? current.coverPhoto : 0;
     h+='<p class="hint" style="margin:0 0 10px">⑦에서 맞춘 실제 발화 시간에 따라 컷 길이가 달라져요. 사진을 눌러 골라주세요. '+
-       '같은 사진이 이어지면 줌이 연결돼요.</p>';
+       '⑨ 영상화가 완료된 사진은 ⑪에서 MP4를 우선 사용하고, 나머지는 사진을 사용해요. 같은 사진끼리는 재생 시간이 이어져요.</p>';
     h+='<div class="cut cover"><span class="cn">커버</span>'+
        '<span class="ct">'+esc(((current.cover||"").split("\n")[1]||"").trim()||"커버 문구")+'</span>'+
        '<button type="button" class="cut-look" data-preview-url="'+esc(blobUrl(srcId(ph[ci])))+'" aria-label="커버 사진 크게 보기">🔍</button>'+
@@ -1117,9 +1117,10 @@
        '<img src="'+blobUrl(srcId(ph[ci]))+'" alt=""><i>'+(ci+1)+'</i></button></div>';
     cuts.forEach(function(t,i){
       var pi=Math.min(ph.length-1, m[i]||0);
+      var useClip=!!renderClipForPhoto(current,ph[pi]);
       h+='<div class="cut"><span class="cn">'+String(i+1).padStart(2,"0")+'</span>'+
          '<span class="ct">'+esc(t)+'<span class="hint" style="display:block">'+
-         (current.cutTimeline[i].start).toFixed(2)+'–'+(current.cutTimeline[i].end).toFixed(2)+'초</span></span>'+
+         (current.cutTimeline[i].start).toFixed(2)+'–'+(current.cutTimeline[i].end).toFixed(2)+'초 · '+(useClip?'🎬 영상':'사진')+'</span></span>'+
          '<button type="button" class="cut-look" data-preview-url="'+esc(blobUrl(srcId(ph[pi])))+'" aria-label="'+(i+1)+'번 컷 사진 크게 보기">🔍</button>'+
          '<button type="button" class="cpick" data-cut="'+i+'">'+
          '<img src="'+blobUrl(srcId(ph[pi]))+'" alt=""><i>'+(pi+1)+'</i></button></div>';
@@ -1401,7 +1402,8 @@
 
   function videoSection(){
     var h='<h2>⑪ 영상 만들기</h2><div class="card">';
-    h+='<p class="hint" style="margin-bottom:10px">자막은 ⑦에서 계산한 발화 시각에 표시되고, 사진은 ⑩에서 정한 컷에 들어가요. ⑨에서 가공한 사진은 가공본이 들어가요.</p>';
+    h+='<p class="hint" style="margin-bottom:10px">자막은 ⑦에서 계산한 발화 시각에 표시돼요. ⑩에서 선택한 사진에 유효한 ⑨ Kling 영상이 있으면 MP4를 우선 사용하고, 없거나 가공 사진이 변경됐으면 사진을 사용해요. '+
+       '같은 사진의 연속 컷은 영상을 이어 재생하며, 클립 길이가 부족한 부분은 반복 없이 마젠타(#FF00FF) 단색으로 표시하고 자막은 유지해요. Kling 오디오는 넣지 않아요.</p>';
     h+=trackRow({k:"bgm",h:"배경음악",hint:"영상 길이에 맞춰 반복 재생돼요."});
     h+='<div style="display:flex;gap:8px;margin-top:12px">'+
          '<button type="button" id="mkthumb" style="flex:1">썸네일 보기</button>'+
@@ -2375,6 +2377,45 @@
       im.src=url;
     });
   }
+  // ⑪은 미리 저장된 Kling MP4를 재생하면서 Canvas에 그린다. Kling API 호출이나 영상 오디오 입력은 없다.
+  function loadClipVideo(url){
+    return new Promise(function(res,rej){
+      var video=document.createElement("video"), settled=false;
+      video.crossOrigin="anonymous"; video.preload="auto"; video.playsInline=true;
+      video.muted=true; video.loop=false; // 절대로 자동 반복하지 않는다.
+      var timeout=setTimeout(function(){settle(new Error("영상 로드 시간 초과"));},30000);
+      function cleanup(){
+        clearTimeout(timeout);
+        video.removeEventListener("loadeddata",onReady);
+        video.removeEventListener("error",onError);
+      }
+      function settle(err){
+        if(settled)return; settled=true; cleanup();
+        if(err){
+          video.removeAttribute("src");try{video.load();}catch(e){}
+          rej(err);
+        }else res(video);
+      }
+      function onReady(){
+        if(!(video.videoWidth>0 && video.videoHeight>0 &&
+             Number.isFinite(video.duration) && video.duration>0)){
+          settle(new Error("영상의 크기나 길이를 확인하지 못했어요."));return;
+        }
+        settle(null);
+      }
+      function onError(){settle(new Error("Kling MP4를 재생할 수 없어요."));}
+      video.addEventListener("loadeddata",onReady);
+      video.addEventListener("error",onError);
+      video.src=url; video.load();
+      if(video.readyState>=2)onReady();
+    });
+  }
+  function releaseClipVideos(clips){
+    (clips||[]).forEach(function(c){
+      if(!c || !c.video)return;
+      try{c.video.pause();c.video.removeAttribute("src");c.video.load();}catch(e){}
+    });
+  }
 
   // 폰트가 없으면 브라우저/기기의 기본 sans-serif를 명시적으로 쓴다.
   // 라이선스 폰트는 선택사항이며, 없어도 썸네일/영상 생성은 계속된다.
@@ -2442,20 +2483,43 @@
   // 사진을 화면에 꽉 채우되 비율을 유지한다. zoom 과 중심점으로 켄번즈를 만든다.
   function drawFill(g,im,zoom,cx,cy){
     var W=VIDEO.w,H=VIDEO.h;
-    var s=Math.max(W/im.width,H/im.height)*zoom;
-    var dw=im.width*s, dh=im.height*s;
+    // 이미지에는 width/height, 영상에는 videoWidth/videoHeight가 들어 있다.
+    var iw=im.videoWidth||im.width, ih=im.videoHeight||im.height;
+    if(!(iw>0 && ih>0)) throw new Error("렌더링할 이미지/영상 크기를 확인하지 못했어요.");
+    var s=Math.max(W/iw,H/ih)*zoom;
+    var dw=iw*s, dh=ih*s;
     var dx=(W-dw)*cx, dy=(H-dh)*cy;
     g.drawImage(im,dx,dy,dw,dh);
   }
 
-  function drawCut(g,im,text,t){
-    var W=VIDEO.w;
-    drawFill(g,im,1.0+0.18*t,0.5,0.5);
+  function drawCutText(g,text){
     if(!text) return;
     g.textAlign="center"; g.lineJoin="round";
     // 자막은 줄을 접지 않는다. 길면 글자를 줄여서 한 줄에 넣는다.
     var sz=fitSize(g,[text],canvasFontFamily("body"),72,980);
-    stroked(g, text, W/2, VIDEO.subY, "#fff", Math.max(4,Math.round(sz*0.07)));
+    stroked(g, text, VIDEO.w/2, VIDEO.subY, "#fff", Math.max(4,Math.round(sz*0.07)));
+  }
+  function drawCut(g,im,text,t){
+    drawFill(g,im,1.0+0.18*t,0.5,0.5);
+    drawCutText(g,text);
+  }
+  function drawMagentaCut(g,text){
+    g.fillStyle="#FF00FF";
+    g.fillRect(0,0,VIDEO.w,VIDEO.h);
+    drawCutText(g,text);
+  }
+  // 연속된 자막 컷이 같은 사진을 쓰면 재생을 초기화하지 않고 시간도 이어 쓴다.
+  // 같은 영상이라도 다른 사진 사이에 끼어 있다가 재등장한 경우 새 구간으로 계산한다.
+  function clipElapsedInRun(windows,runFrom,index,rel){
+    return Math.max(0,rel-windows[runFrom[index]].start);
+  }
+  function drawClipCut(g,video,text,elapsed,duration){
+    // 실제 영상 길이 이후에는 마지막 프레임 고정이나 반복 없이 마젠타(#FF00FF).
+    if(elapsed>=duration || video.ended || video.readyState<2 || video.seeking){
+      drawMagentaCut(g,text);return;
+    }
+    drawFill(g,video,1,0.5,0.5);
+    drawCutText(g,text);
   }
 
   // ---------- 썸네일 따로 보기 / 따로 저장 ----------
@@ -2544,10 +2608,29 @@
     if(fontsReady.body){
       try{ await document.fonts.load('72px "ReelBody"'); }catch(e){}
     }
-    var imgs=[];
+    // ⑩의 선택은 사진 ID 그대로 유지한다. 유효한 ⑨ 영상이 있으면 ⑪에서만 MP4를 우선한다.
+    var renderMap=ensureMap(), selectedPhotos={};
+    renderMap.forEach(function(pi){ selectedPhotos[pi]=true; });
+    var cIdx=(typeof current.coverPhoto==="number" && current.coverPhoto<photos.length &&
+              current.coverPhoto>=0) ? current.coverPhoto : 0;
+    var imgs=[], clipVideos=[], coverImg=null;
     try{
-      for(var i=0;i<photos.length;i++) imgs.push(await loadImg(blobUrl(srcId(photos[i]))));
-    }catch(e){ st("사진을 불러오지 못했어요.",true); return; }
+      for(var i=0;i<photos.length;i++){
+        var clip=selectedPhotos[i] ? renderClipForPhoto(current,photos[i]) : null;
+        if(clip){
+          var video=await loadClipVideo(blobUrl(clip.id));
+          clipVideos[i]={video:video,duration:video.duration};
+          imgs.push(video);
+        }else{
+          imgs.push(await loadImg(blobUrl(srcId(photos[i]))));
+        }
+      }
+      // 썸네일/커버만큼은 MP4가 아니라 기존 사진을 사용한다.
+      coverImg=clipVideos[cIdx] ? await loadImg(blobUrl(srcId(photos[cIdx]))) : imgs[cIdx];
+    }catch(e){
+      releaseClipVideos(clipVideos);
+      st("사진·Kling 영상 준비 실패: "+((e&&e.message)||"파일을 확인해주세요."),true); return;
+    }
 
     var cuts=(current.script||"").split("\n").map(function(x){return x.trim()})
              .filter(function(x){return x});
@@ -2568,6 +2651,7 @@
       }catch(e){
         st("소리를 불러오지 못했어요. 음성 싱크가 깨질 수 있어 영상 제작을 중단합니다.",true);
         if(actx)try{await actx.close();}catch(e2){}
+        releaseClipVideos(clipVideos);
         return;
       }
     }
@@ -2579,18 +2663,21 @@
     if(dest) dest.stream.getAudioTracks().forEach(function(tr){ stream.addTrack(tr); });
     var chunks=[], rec;
     try{ rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:6000000}); }
-    catch(e){ st("녹화를 시작하지 못했어요.",true); return; }
+    catch(e){
+      st("녹화를 시작하지 못했어요.",true);
+      if(actx)try{await actx.close();}catch(e2){}
+      releaseClipVideos(clipVideos);
+      return;
+    }
     rec.ondataavailable=function(ev){ if(ev.data && ev.data.size) chunks.push(ev.data); };
 
-    var cIdx=(typeof current.coverPhoto==="number" && current.coverPhoto<imgs.length)
-             ? current.coverPhoto : 0;
     var done=new Promise(function(res){ rec.onstop=res; });
     rec.start();
 
     // 어떤 컷에 어떤 사진을 쓸지는 ⑤ 컷 맞추기에서 정한 값을 그대로 쓴다.
     // 같은 사진이 연달아 나오면 켄번즈 줌을 그 구간 전체에 걸쳐 이어서 멈춘 느낌을 없앤다.
     var N=cuts.length || imgs.length;
-    var mp=ensureMap();
+    var mp=renderMap;
     var span=[], runFrom=[], runLen=[];
     for(var ci=0; ci<N; ci++){
       var v=mp[ci];
@@ -2606,7 +2693,12 @@
     // 자막별 실제 발화 시각을 사용한다. 컷당 0.9초/음성 균등분할 금지.
     var coverMs=VIDEO.coverHold*1000;
     var windows=current.cutTimeline;
-    if(windows.length!==N){st("컷 수와 싱크 수가 달라요. ⑦에서 다시 배치해주세요.",true);return;}
+    if(windows.length!==N){
+      rec.stop(); await done;
+      if(actx)try{await actx.close();}catch(e){}
+      releaseClipVideos(clipVideos);
+      st("컷 수와 싱크 수가 달라요. ⑦에서 다시 배치해주세요.",true);return;
+    }
     var voiceMs=narBuf ? narBuf.duration*1000 : Number(current.ttsDuration)*1000;
     var total=coverMs+voiceMs;
 
@@ -2633,34 +2725,72 @@
       }
     }
 
-    var t0=performance.now();
+    var t0=performance.now(), activeVideo=null, activeRun=-1, playbackError=null;
 
-    await new Promise(function(res){
-      function frame(){
-        var el=performance.now()-t0;
-        if(el>=total){ res(); return; }
-        if(el<coverMs){ drawCover(g,imgs[cIdx],cover); }
-        else{
-          var rel=(el-coverMs)/1000, lo=0, hi=N-1;
-          while(lo<hi){
-            var mid=(lo+hi+1)>>1;
-            if(windows[mid].start<=rel)lo=mid;else hi=mid-1;
-          }
-          var idx=lo;
-          var runStart=windows[runFrom[idx]].start;
-          var runEnd=windows[runFrom[idx]+runLen[idx]-1].end;
-          var k=Math.max(0,Math.min(1,(rel-runStart)/Math.max(0.01,runEnd-runStart)));
-          drawCut(g,imgs[span[idx]],cuts[idx]||"",k);
+    try{
+      await new Promise(function(res,rej){
+        function frame(){
+          try{
+            if(playbackError) throw playbackError;
+            var el=performance.now()-t0;
+            if(el>=total){ res(); return; }
+            if(el<coverMs){ drawCover(g,coverImg,cover); }
+            else{
+              var rel=(el-coverMs)/1000, lo=0, hi=N-1;
+              while(lo<hi){
+                var mid=(lo+hi+1)>>1;
+                if(windows[mid].start<=rel)lo=mid;else hi=mid-1;
+              }
+              var idx=lo, pi=span[idx];
+              var runStart=windows[runFrom[idx]].start;
+              var runEnd=windows[runFrom[idx]+runLen[idx]-1].end;
+              var k=Math.max(0,Math.min(1,(rel-runStart)/Math.max(0.01,runEnd-runStart)));
+              var clip=clipVideos[pi];
+              if(clip){
+                // 같은 사진의 연속 컷이면 영상 시간도 계속 진행한다.
+                var elapsed=clipElapsedInRun(windows,runFrom,idx,rel);
+                if(activeVideo!==clip.video || activeRun!==runFrom[idx]){
+                  if(activeVideo) activeVideo.pause();
+                  activeVideo=clip.video; activeRun=runFrom[idx];
+                  clip.video.pause();
+                  if(elapsed<clip.duration){
+                    if(clip.video.currentTime>0.05) clip.video.currentTime=0;
+                    var playback=clip.video.play();
+                    if(playback && playback.catch) playback.catch(function(e){
+                      playbackError=new Error("Kling MP4 재생 실패: "+((e&&e.message)||e));
+                    });
+                  }
+                }
+                if(elapsed>=clip.duration){
+                  clip.video.pause(); // 남는 시간은 반복하지 않고 아래 drawClipCut이 마젠타로 그림
+                }else if(!clip.video.seeking && Math.abs(clip.video.currentTime-elapsed)>0.45){
+                  // 브라우저 디코딩이 실제 발화 시간과 어긋나면 타임라인을 따라간다.
+                  clip.video.currentTime=Math.min(elapsed,Math.max(0,clip.duration-0.04));
+                }
+                drawClipCut(g,clip.video,cuts[idx]||"",elapsed,clip.duration);
+              }else{
+                if(activeVideo){activeVideo.pause();activeVideo=null;activeRun=-1;}
+                drawCut(g,imgs[pi],cuts[idx]||"",k);
+              }
+            }
+            st("만드는 중... "+Math.round(el/total*100)+"%  (화면을 끄지 마세요)");
+            requestAnimationFrame(frame);
+          }catch(e){rej(e);}
         }
-        st("만드는 중... "+Math.round(el/total*100)+"%  (화면을 끄지 마세요)");
         requestAnimationFrame(frame);
-      }
-      requestAnimationFrame(frame);
-    });
+      });
+    }catch(e){
+      try{rec.stop();await done;}catch(x){}
+      if(actx){try{await actx.close();}catch(x){}}
+      releaseClipVideos(clipVideos);
+      st("영상 렌더링 실패: "+((e&&e.message)||String(e)),true);
+      return;
+    }
 
     rec.stop();
     await done;
     if(actx){ try{ await actx.close(); }catch(e){} }
+    releaseClipVideos(clipVideos);
 
     var ext = mime.indexOf("mp4")>=0 ? "mp4" : "webm";
     var blob=new Blob(chunks,{type:mime});
@@ -2717,7 +2847,7 @@
   // 원본 사진의 가로세로 비율로 생성한다. 공통 프롬프트나 공통 레퍼런스는 없다.
   // 결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에서 결과로 바뀐다. 결과를 지우면 원본으로 돌아간다.
   // 가공 사진이 생기면 같은 줄에서 Kling 3.0 Pro(Omni) 로 9:16 영상(클립)도 만들 수 있다.
-  // 클립은 아직 ⑩·⑪ 릴스 조립에 쓰이지 않는다.
+  // ⑩은 기존 사진 선택을 유지하며, ⑪은 유효한 클립이 있으면 MP4를 우선 사용한다.
   //
   // 저장 구조
   //   current.editSpecs[사진id] = { prompt:"...", refs:[{id,w,h,size}], vprompt:"...", vdur:"5" }  ← 사진별 입력
@@ -2742,6 +2872,13 @@
   function srcId(p){
     var e = p && current && current.edits ? current.edits[p.id] : null;
     return (e && e.id) || (p && p.id);
+  }
+  // ⑪ 사진 소스 선택은 유지하고, 현재 가공본에서 만든 정상 영상이 있을 때만 MP4를 우선한다.
+  // 가공 사진을 다시 만들거나 결과를 지운 경우에는 과거 영상을 쓰지 않는다.
+  function renderClipForPhoto(proj, photo){
+    if(!proj || !photo) return null;
+    var e=(proj.edits||{})[photo.id], c=(proj.clips||{})[photo.id];
+    return (c && c.id && e && e.id && c.fromEdit===e.id) ? c : null;
   }
 
   // 읽기 전용. 아직 입력이 없으면 빈 값을 돌려준다(프로젝트를 건드리지 않는다).
@@ -3128,7 +3265,7 @@
 
     h+='<p class="hint"><strong>영상화 · Kling 3.0 Pro · 9:16</strong><br>영상 길이는 줄마다 따로 적어요 ('+CLIP.minDur+'~'+CLIP.maxDur+'초, 비우면 '+CLIP.dur+'초). '+
        '영상은 한 편에 몇 분씩 걸려요. 기다리는 동안 다른 작업을 해도 되고, 새로고침해도 이어서 기다려요. '+
-       '길수록 비싸요. 만든 영상은 아직 ⑩·⑪ 릴스에는 들어가지 않아요.</p>'+
+       '길수록 비싸요. 완료된 영상은 ⑪ 편집에서 자동 우선 사용되며, 길이가 부족하면 마젠타 단색으로 나와요.</p>'+
        '<p class="hint">영상화 프롬프트에서 '+esc("<<<image_1>>>")+' 가공 사진, '+esc("<<<image_2>>>")+' 원본, '+
        esc("<<<image_3>>>")+'부터 그 사진의 레퍼런스를 가리킬 수 있어요.</p>';
 

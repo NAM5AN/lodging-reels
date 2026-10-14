@@ -279,7 +279,8 @@ test("row layout: 원본 → 가공 → 영상, then 사진 가공 / 영상화 w
     "prompt → length → buttons");
   assert.ok(!html.includes('id="f_clipDur"'),"no shared length select");
   assert.ok(!/proj\.clipDur|current\.clipDur/.test(html),"length is not stored per project");
-  assert.ok(src.includes("아직 ⑩·⑪ 릴스에는 들어가지 않아요"),"says clips are not in the reel yet");
+  assert.ok(src.includes("완료된 영상은 ⑪ 편집에서 자동 우선 사용되며"),"completed clips feed the final reel");
+  assert.ok(src.includes("길이가 부족하면 마젠타 단색으로 나와요"),"overrun is explicitly communicated");
 });
 
 test("clips are cleaned up with their photo and project, kept across reloads, and polling resumes",()=>{
