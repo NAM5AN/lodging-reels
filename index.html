@@ -3824,7 +3824,8 @@
       : "「"+(el.name||"이름 없는")+"」 요소를 지울까요?";
     if(!confirm(q)) return;
     if(el.name) renameMentions(current, el.name, "삭제됨");
-    current.elements=elemList(current).filter(function(x){ return x.key!==key; });
+    // 숙소 삭제 동작은 로컬 요소 배열만 바꾼다. 계정 공통 요소는 건드리지 않는다.
+    current.elements=(current.elements||[]).filter(function(x){ return x.key!==key; });
     delete elemErrors[key]; delete elemDrafts[key];
     await persist(current);
     elemPhotos(el).forEach(function(x){ storeDelete(x.id).catch(function(){}); });

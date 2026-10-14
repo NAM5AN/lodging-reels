@@ -26,7 +26,7 @@ const core=[
   "mentionsOf(proj, pid, text, stage){","mentionedElements(proj, pid, text, stage){",
   "replaceMentions(proj, pid, text, stage, map){","editRefPlan(proj, pid){",
   "clipHead(proj, refCount, els){","clipPlan(proj, pid){","clipPromptText(proj, pid){",
-  "clipBlocker(proj, pid){","clipInputProblem(proj, pid){","clipRequest(proj, pid){",
+  "clipBlocker(proj, pid){","clipInputProblem(proj, pid){","clipDuration(proj, pid){","clipRequest(proj, pid){",
 ].map(grab).join("\n");
 
 function shared(name="운영자"){
