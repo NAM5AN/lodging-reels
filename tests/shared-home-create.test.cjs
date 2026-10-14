@@ -50,7 +50,7 @@ function harness(opts={}){
     }
   });
   const names=["elemList","elemByKey","elemByName","elemPhotos","elemSig","elemNameProblem",
-    "elemState","elemStatusDetails","elemStatusRows","sharedUsageSummary","sharedNameProblem",
+    "elemState","elemStatusDetails","elemStatusRows","elemPhotoLocked","sharedUsageSummary","sharedNameProblem",
     "createSharedElement","loadSharedElements","sharedRegistrationHtml",
     "sharedDeletedLabel","deleteSharedRegistered","sharedRegister"];
   vm.runInContext(names.map(grab).join("\n"),ctx);
