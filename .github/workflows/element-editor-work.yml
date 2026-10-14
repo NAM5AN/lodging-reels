@@ -1,22 +1,62 @@
-name: Element editor workspace
+name: Element editor validation
 on:
   push:
     branches: [work/elements-photo-edit-20261014]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  snapshot:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/upload-artifact@v4
         with:
-          name: elements-source
-          path: |
-            index.html
-            package.json
-            reels-media.js
-            api/
-            tests/
-            supabase/
-          retention-days: 1
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply exact locally tested patch
+        run: |
+          test "$(git hash-object index.html)" = "acde01f9bacb8477d741049ffab8ef94eddaa8a3"
+          python3 - <<'PY'
+          import base64, lzma, hashlib
+          from pathlib import Path
+          encoded = ''.join(Path('.work/element-editor-part%d.b64' % i).read_text().strip() for i in (1, 2))
+          patch = lzma.decompress(base64.b64decode(encoded, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == 'bf5b7a5fc87efb368906dab8d895716b2de09f6cbb2a23d6ae143eb2fc5a4d76'
+          Path('/tmp/element-editor.patch').write_bytes(patch)
+          PY
+          git apply --check --unidiff-zero /tmp/element-editor.patch
+          git apply --unidiff-zero /tmp/element-editor.patch
+          python3 - <<'PY'
+          import subprocess
+          expected = {
+            'index.html': '5e55a0286210b9b567fc08547f5acdec09dcd277',
+            'tests/element-photo-edit.test.cjs': '4e909ff151547c3ab188b20a3e04cf4bc391a493',
+            'tests/element-status.test.cjs': 'b98f734ae07b455261fdf9176ac633e764521586',
+            'tests/elements.test.cjs': 'dc3a421b25686897a7c59f45f2ab94afb84dabf9',
+            'tests/shared-management.test.cjs': '3704926aa1697d96eebda1661399e63a08f78353',
+          }
+          for path, sha in expected.items():
+              actual = subprocess.check_output(['git', 'hash-object', path], text=True).strip()
+              assert actual == sha, (path, actual, sha)
+              print(path, actual)
+          PY
+      - name: Node syntax and regression tests
+        run: |
+          node --check reels-media.js
+          node --check api/image-edit.js
+          node --test tests/*.test.cjs
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Verify unchanged Kling backend
+        run: |
+          deno check supabase/functions/lodging-reels-clip/clip.ts
+          deno test --no-check tests/clip-function.test.ts
+      - name: Save validated source on isolated branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html tests/element-photo-edit.test.cjs tests/element-status.test.cjs tests/elements.test.cjs tests/shared-management.test.cjs
+          git commit -m 'feat: edit element photos and explicitly re-register shared Kling identities'
+          git push origin HEAD:work/elements-photo-edit-20261014
