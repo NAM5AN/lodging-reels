@@ -61,8 +61,9 @@ function validate(body, uid) {
   if (refs.length > MAX_REFS) {
     return { error: "too_many_refs", message: "추가 레퍼런스는 " + MAX_REFS + "장까지예요." };
   }
+  // ref: 그 줄 레퍼런스, element: 프롬프트에 [이름] 으로 부른 ⑨ 요소 사진(정면·다른 각도).
   for (let i = 0; i < refs.length; i++) {
-    if (!checkPath(refs[i], uid, ["ref"])) {
+    if (!checkPath(refs[i], uid, ["ref", "element"])) {
       return { error: "bad_ref", message: "레퍼런스 경로가 올바르지 않아요." };
     }
   }

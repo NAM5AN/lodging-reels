@@ -1,5 +1,10 @@
-// ⑨ 영상화 — Kling 3.0 (Omni, Pro) 직접 호출. 본체는 clip.ts.
+// ⑨ 영상화 + 요소(Element) — Kling 3.0 Omni 직접 호출. 본체는 clip.ts.
 // 비밀키는 Supabase Edge Function Secret 에만 둔다. 브라우저로 내보내지 않는다.
+//
+// action
+//   start / status                         영상 만들기 / 확인
+//   element_create / element_status        요소 Kling 등록 / 확인
+//   element_delete                         요소 Kling 쪽 삭제
 //
 // Secrets
 //   KLINGAI_API_KEY   필수. Kling API 키. Authorization: Bearer 로 그대로 보낸다.

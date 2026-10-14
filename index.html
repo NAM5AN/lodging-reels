@@ -153,6 +153,40 @@
   .vdur input:focus{border-color:var(--accent)}
   .vdur input.bad{border-color:var(--warn); color:var(--warn)}
   .vdur span{font-size:12.5px; color:var(--mute)}
+  /* ⑨ 요소 (Kling Element) */
+  .elems{margin:14px 0 4px; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--field)}
+  .elems>.elab{margin:0 0 2px}
+  .elem{padding:10px 0; border-bottom:1px solid var(--line)}
+  .elem:last-of-type{border-bottom:0}
+  .elem-ph{display:flex; flex-wrap:wrap; gap:6px; align-items:center}
+  .elem-ph .eref i{position:absolute; left:0; bottom:0; right:0; font-style:normal; font-size:9.5px; font-weight:700;
+    color:#fff; background:rgba(0,0,0,.6); text-align:center}
+  .elem-f{display:flex; gap:6px; margin-top:6px}
+  .elem-f input{flex:1 1 0; min-width:0; padding:9px 10px; font:inherit; font-size:15px; color:var(--ink);
+    background:var(--card); border:1px solid var(--line); border-radius:10px; outline:none}
+  .elem-f input.nm{flex:0 0 34%}
+  .elem-f input:focus{border-color:var(--accent)}
+  .elem-f input.bad{border-color:var(--warn)}
+  .elem-k{display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap}
+  .elem-k .st{flex:1 1 140px; font-size:12.5px; color:var(--mute)}
+  .elem-k .st.ok{color:var(--accent); font-weight:600}
+  .elem-k .st.bad{color:var(--warn)}
+  .elem-k button{padding:8px 12px; font-size:13.5px}
+  .elink{border-style:dashed}
+  .elink b{position:absolute; left:0; right:0; bottom:0; font-size:9.5px; font-weight:700; color:#fff;
+    background:rgba(0,0,0,.62); text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .ecount{font-size:12px; color:var(--mute); font-variant-numeric:tabular-nums}
+  .elinks:empty,.mwarn:empty{display:none}
+  .ecount.bad{color:var(--warn); font-weight:700}
+  .mwarn{color:var(--warn)}
+  .mbox{margin-top:4px; border:1px solid var(--line); border-radius:10px; background:var(--card);
+    box-shadow:0 6px 18px rgba(0,0,0,.12); max-height:240px; overflow-y:auto}
+  .mbox button{display:flex; align-items:center; gap:10px; width:100%; padding:7px 10px; border:0; border-radius:0;
+    background:transparent; text-align:left; font-size:14.5px; font-weight:600}
+  .mbox button+button{border-top:1px solid var(--line)}
+  .mbox button.on{background:var(--field)}
+  .mbox img,.mbox .noimg{width:34px; height:34px; flex:0 0 34px; border-radius:6px; object-fit:cover; background:var(--field)}
+  .mbox small{font-weight:400; color:var(--mute); font-size:12px; margin-left:auto}
   .eside{flex:1 1 180px; min-width:0}
   .ebtns{display:flex; gap:6px; margin-top:6px}
   .eside textarea{min-height:64px; font-size:14.5px}
@@ -278,7 +312,7 @@
 
   // 사진은 영상이 1080x1920 이라 2160px 이면 충분하다.
   // 상세페이지는 글씨를 읽어야 해서 더 크게 남긴다.
-  var LIMITS = {photo:{edge:2160, q:0.88}, info:{edge:2400, q:0.92}, ref:{edge:2048, q:0.9}};
+  var LIMITS = {photo:{edge:2160, q:0.88}, info:{edge:2400, q:0.92}, ref:{edge:2048, q:0.9}, element:{edge:2048, q:0.9}};
   // 이미지 종류 → 프로젝트 필드. 레퍼런스(ref)는 ⑨ 이미지 가공에서만 쓴다.
   function keyOf(kind){ return kind==="photo" ? "photos" : kind==="ref" ? "refs" : "infos"; }
 
@@ -553,6 +587,7 @@
         v.editSpecs=JSON.parse(JSON.stringify(v.editSpecs||{}));
         v.clips=Object.assign({}, v.clips||{});
         v.clipJobs=JSON.parse(JSON.stringify(v.clipJobs||{}));
+        v.elements=JSON.parse(JSON.stringify(v.elements||[]));
         return v;
       });
       local=false;
@@ -580,6 +615,10 @@
     var ids=(p.photos||[]).concat(p.infos||[]).concat(p.refs||[]).map(function(x){return x.id});
     Object.keys(p.edits||{}).forEach(function(k){ var e=p.edits[k]; if(e && e.id) ids.push(e.id); });
     Object.keys(p.clips||{}).forEach(function(k){ var c=p.clips[k]; if(c && c.id) ids.push(c.id); });
+    (p.elements||[]).forEach(function(el){
+      [el.front].concat(el.angles||[]).forEach(function(x){ if(x && x.id) ids.push(x.id); });
+      if(el.kling && el.kling.elementId) klingElementDelete(el.kling.elementId);
+    });
     Object.keys(p.editSpecs||{}).forEach(function(k){
       ((p.editSpecs[k]||{}).refs||[]).forEach(function(r){ if(r && r.id) ids.push(r.id); });
     });
@@ -3083,10 +3122,124 @@
       " When no pose is specified, let gestures and body language arise from the moment rather than a stock portrait pose."+
       " Preserve Image 1's original width-to-height aspect ratio without stretching or padding.";
   }
-  // 모델에 보내는 최종 프롬프트.
+  // ---------- ⑨ 요소 (Kling Element) ----------
+  // 숙소마다 따로 등록하는 사람·물건. 정면 1장 + 다른 각도 1~3장 + 이름·설명.
+  // 프롬프트에 [이름] 으로 부르면 사진 가공에는 그 사진들을 레퍼런스로, 영상화에는 Kling 요소 번호로 넣는다.
+  //   current.elements = [{ key, name, desc, front:{id,w,h,size}, angles:[{id,w,h,size}],
+  //                         kling:{ status:"pending"|"ready"|"failed", taskId, elementId, sig, at, msg } }]
+  var ELEM = { nameMax:20, descMax:100, maxAngles:3, minSide:300, maxRatio:2.5, giveUpMs:30*60*1000 };
+  // elemDrafts: 규칙에 안 맞아 반영하지 못한 이름(칸에 그대로 남겨 고치게 한다). 저장하지 않는다.
+  var elemInflight={}, elemErrors={}, elemDrafts={};
+
+  function elemList(proj){ return (proj && proj.elements) || []; }
+  function elemByKey(proj, key){ return elemList(proj).find(function(x){ return x.key===key; }) || null; }
+  function elemByName(proj, name){ return elemList(proj).find(function(x){ return x.name && x.name===name; }) || null; }
+  function elemPhotos(el){ return [el.front].concat(el.angles||[]).filter(function(x){ return x && x.id; }); }
+  // 등록 당시 사진 묶음. 사진이 바뀌면 Kling 요소는 다시 등록해야 한다.
+  function elemSig(el){ return elemPhotos(el).map(function(x){ return x.id; }).join("|"); }
+  // 이름 규칙. 예약어 · [ ] @ 금지, 서로 포함되는 이름 금지(Kling 문서 권고: @Zhang / @ZhangSan).
+  function elemNameProblem(proj, name, selfKey){
+    name=String(name||"").trim();
+    if(!name) return "이름을 적어주세요.";
+    if(name.length>ELEM.nameMax) return "이름은 "+ELEM.nameMax+"자까지예요.";
+    if(/[\[\]@\n]/.test(name)) return "이름에 [ ] @ 는 쓸 수 없어요.";
+    if(/^(원본|가공|삭제됨|레퍼런스\s*\d+)$/.test(name)) return "「"+name+"」 — 미리 정해진 이름이라 쓸 수 없어요.";
+    var hit=elemList(proj).find(function(x){
+      return x.key!==selfKey && x.name && (x.name.indexOf(name)>=0 || name.indexOf(x.name)>=0);
+    });
+    if(hit) return hit.name===name ? "같은 이름의 요소가 있어요." : "「"+hit.name+"」 — 이름이 서로 겹쳐요. 포함되지 않게 지어주세요.";
+    return "";
+  }
+  // draft(이름·설명·사진 부족) / new(등록 전) / pending / ready / failed / stale(등록 뒤 사진이 바뀜)
+  function elemState(proj, el){
+    if(!el || !el.name || elemNameProblem(proj, el.name, el.key) || !String(el.desc||"").trim() ||
+       !(el.front && el.front.id) || !(el.angles||[]).length) return "draft";
+    var k=el.kling;
+    if(!k || !k.status) return "new";
+    if(k.status==="pending") return "pending";
+    if(k.status==="failed") return "failed";
+    if(k.status==="ready") return k.sig===elemSig(el) && k.elementId ? "ready" : "stale";
+    return "new";
+  }
+
+  // ---------- [이름] 부르기 ----------
+  // 프롬프트의 [원본] [가공] [레퍼런스N] [요소이름] 을 찾는다. 보낼 때 단계별 태그로 바꾼다.
+  // 사용자는 태그를 볼 일이 없다.
+  var MENTION_RE=/\[([^\[\]\n]{1,30})\]/g;
+  function mentionsOf(proj, pid, text, stage){
+    var refsN=peekSpec(proj, pid).refs.length, out=[], m, re=new RegExp(MENTION_RE.source, "g");
+    while((m=re.exec(String(text||"")))){
+      var name=m[1].trim(), t={raw:m[0], name:name, kind:"unknown"}, rm=name.match(/^레퍼런스\s*(\d+)$/);
+      if(name==="원본") t.kind="original";
+      else if(name==="가공") t.kind = stage==="edit" ? "bad_edited" : "edited";
+      else if(rm){ t.n=+rm[1]; t.kind = t.n>=1 && t.n<=refsN ? "ref" : "bad_ref"; }
+      else if(name==="삭제됨") t.kind="deleted";
+      else { var el=elemByName(proj, name); if(el){ t.kind="element"; t.el=el; } }
+      out.push(t);
+    }
+    return out;
+  }
+  // 프롬프트에 쓴 요소. 쓴 순서대로, 겹치지 않게.
+  function mentionedElements(proj, pid, text, stage){
+    var list=[], keys={};
+    mentionsOf(proj, pid, text, stage).forEach(function(t){
+      if(t.kind==="element" && !keys[t.el.key]){ keys[t.el.key]=1; list.push(t.el); }
+    });
+    return list;
+  }
+  // 줄에 표시만 하는 안내. 보내는 건 막지 않는다(글자 그대로 간다).
+  function mentionWarnings(proj, pid, text, stage){
+    var refsN=peekSpec(proj, pid).refs.length, w=[], said={};
+    mentionsOf(proj, pid, text, stage).forEach(function(t){
+      var msg="";
+      if(t.kind==="unknown") msg=t.raw+" — 등록된 요소가 아니에요";
+      else if(t.kind==="deleted") msg="[삭제됨] — 지운 요소예요. 다른 요소로 바꿔주세요";
+      else if(t.kind==="bad_edited") msg="[가공] — 사진 가공에서는 쓸 수 없어요 (지금 만드는 결과물이에요)";
+      else if(t.kind==="bad_ref") msg=t.raw+" — 이 줄 레퍼런스는 "+refsN+"장이에요";
+      else if(t.kind==="element" && !elemPhotos(t.el).length) msg=t.raw+" — 요소에 사진이 없어요";
+      if(msg && !said[msg]){ said[msg]=1; w.push(msg); }
+    });
+    return w;
+  }
+  // [이름] 을 바꾼다. map(t) 가 문자열을 돌려주면 그걸로, null 이면 그대로 둔다.
+  function replaceMentions(proj, pid, text, stage, map){
+    var toks=mentionsOf(proj, pid, text, stage), i=0;
+    return String(text||"").replace(new RegExp(MENTION_RE.source, "g"), function(raw){
+      var t=toks[i++], r=t ? map(t) : null;
+      return r==null ? raw : r;
+    });
+  }
+
+  // 사진 가공 레퍼런스: 그 줄 레퍼런스 → 프롬프트에 쓴 요소의 사진들(쓴 순서대로). Image 1 은 원본.
+  function editRefPlan(proj, pid){
+    var sp=peekSpec(proj, pid), ids=sp.refs.map(function(r){ return r.id; }), groups=[];
+    mentionedElements(proj, pid, sp.prompt, "edit").forEach(function(el){
+      var ph=elemPhotos(el);
+      if(!ph.length) return;
+      groups.push({el:el, from:ids.length+2, to:ids.length+1+ph.length});
+      ph.forEach(function(x){ ids.push(x.id); });
+    });
+    return {ids:ids, groups:groups, over:ids.length>EDIT.maxRefs};
+  }
+  function imagesLabel(from, to){ return from===to ? "Image "+from : "Images "+from+"-"+to; }
+
+  // 모델에 보내는 최종 프롬프트. 요소는 "Images 4-7 show "아이": 설명." 을 앞에 붙이고,
+  // 본문의 [원본] [레퍼런스N] [이름] 을 Image 번호로 바꾼다.
   function editPromptText(proj, pid){
-    var sp=peekSpec(proj, pid);
-    return editHead(proj, sp.refs.length)+"\n\n"+sp.prompt.trim();
+    var sp=peekSpec(proj, pid), plan=editRefPlan(proj, pid), byKey={};
+    var head=editHead(proj, plan.ids.length);
+    plan.groups.forEach(function(g){
+      byKey[g.el.key]=g;
+      head+=" "+imagesLabel(g.from, g.to)+(g.from===g.to ? " shows" : " show")+' "'+g.el.name+'"'+
+        (String(g.el.desc||"").trim() ? ": "+String(g.el.desc).trim() : "")+".";
+    });
+    var text=replaceMentions(proj, pid, sp.prompt.trim(), "edit", function(t){
+      if(t.kind==="original") return "Image 1";
+      if(t.kind==="ref") return "Image "+(t.n+1);
+      if(t.kind==="element" && byKey[t.el.key]) return t.el.name+" ("+imagesLabel(byKey[t.el.key].from, byKey[t.el.key].to)+")";
+      return null;
+    });
+    return head+"\n\n"+text;
   }
 
   // 함수로 보낼 요청 본문. 프롬프트가 없으면 만들지 않는다.
@@ -3098,7 +3251,7 @@
       base: pid,
       baseW: photo.w||0,
       baseH: photo.h||0,
-      refs: sp.refs.map(function(r){ return r.id; }),
+      refs: editRefPlan(proj, pid).ids,
       prompt: editPromptText(proj, pid),
       quality: proj.editQuality||"high"
     };
@@ -3120,42 +3273,70 @@
   }
 
   // ---------- ⑨ 영상화 (Kling 3.0 Pro · Omni) ----------
-  // Kling Omni 는 프롬프트에서 이미지를 <<<image_N>>> 로 가리킨다. 번호는 보내는 순서다:
-  // image_1 가공 사진, image_2 원본, image_3~ 이 사진의 레퍼런스.
-  function clipHead(proj, refCount){
-    var h="Create a vertical 9:16 photorealistic short-form video that brings the scene in <<<image_1>>> to life."+
-      " <<<image_2>>> is the original photo of the real accommodation.";
+  // Kling 은 프롬프트에서 입력물을 @id 로 가리킨다. id 는 함수(lodging-reels-clip)가 보내는 순서대로 붙인다:
+  // image_1 가공 사진, image_2 원본, image_3~ 이 사진의 레퍼런스, element_1~ 프롬프트에 쓴 요소.
+  function clipHead(proj, refCount, els){
+    var h="Create a vertical 9:16 photorealistic short-form video that brings the scene in @image_1 to life."+
+      " @image_2 is the original photo of the real accommodation.";
     if(proj.editKeepReal!==false){
-      h+=" Keep the accommodation's actual architecture, furniture, windows and layout as in <<<image_2>>>;"+
+      h+=" Keep the accommodation's actual architecture, furniture, windows and layout as in @image_2;"+
          " do not add rooms or facilities that are not there.";
     }
-    if(refCount===1) h+=" <<<image_3>>> is an additional reference.";
-    else if(refCount>1) h+=" <<<image_3>>> to <<<image_"+(refCount+2)+">>> are additional references.";
+    if(refCount===1) h+=" @image_3 is an additional reference.";
+    else if(refCount>1) h+=" @image_3 to @image_"+(refCount+2)+" are additional references.";
     if(refCount) h+=" Use the additional references for people, appearance, props, style or atmosphere as described below.";
+    (els||[]).forEach(function(el, k){
+      h+=" @element_"+(k+1)+" is "+el.name+(String(el.desc||"").trim() ? ": "+String(el.desc).trim() : "")+".";
+    });
     return h;
   }
+  // 영상 입력: 가공 → 원본 → 그 줄 레퍼런스, 그리고 영상화 프롬프트에 쓴 요소. 합쳐서 7개(Kling Omni 한도).
+  // 넘치면 프롬프트에서 부르지 않은 레퍼런스를 뒤에서부터 뺀다. 그래도 넘치면 over(보내기 전에 막는다).
+  function clipPlan(proj, pid){
+    var e=(proj.edits||{})[pid], sp=peekSpec(proj, pid), named={};
+    mentionsOf(proj, pid, sp.vprompt, "clip").forEach(function(t){ if(t.kind==="ref") named[t.n]=1; });
+    var els=mentionedElements(proj, pid, sp.vprompt, "clip");
+    var refs=sp.refs.map(function(r, j){ return {n:j+1, id:r.id, w:r.w, h:r.h}; }), dropped=[];
+    var room=CLIP.maxInputs-2-els.length;
+    for(var j=refs.length-1; j>=0 && refs.length>room; j--){
+      if(!named[refs[j].n]){ dropped.unshift(refs[j].n); refs.splice(j, 1); }
+    }
+    var refImage={};
+    refs.forEach(function(x, k){ refImage[x.n]=k+3; });
+    var total=2+refs.length+els.length;
+    return {
+      images: e && e.id ? [e.id, pid].concat(refs.map(function(x){ return x.id; })) : [],
+      refs:refs, refImage:refImage, elements:els, dropped:dropped, total:total, over:total>CLIP.maxInputs
+    };
+  }
   function clipPromptText(proj, pid){
-    var n=Math.max(0, clipInputs(proj, pid).length-2);
-    return clipHead(proj, n)+"\n\n"+peekSpec(proj, pid).vprompt.trim();
+    var sp=peekSpec(proj, pid), plan=clipPlan(proj, pid), elIdx={};
+    plan.elements.forEach(function(el, k){ elIdx[el.key]=k+1; });
+    var text=replaceMentions(proj, pid, sp.vprompt.trim(), "clip", function(t){
+      if(t.kind==="edited") return "@image_1";
+      if(t.kind==="original") return "@image_2";
+      if(t.kind==="ref" && plan.refImage[t.n]) return "@image_"+plan.refImage[t.n];
+      if(t.kind==="element" && elIdx[t.el.key]) return "@element_"+elIdx[t.el.key];
+      return null;
+    });
+    return clipHead(proj, plan.refs.length, plan.elements)+"\n\n"+text;
   }
-  // 영상 레퍼런스: 가공 사진 → 원본 → 이 사진의 레퍼런스. 합쳐서 최대 7장(Kling Omni 한도).
-  function clipInputs(proj, pid){
-    var e=(proj.edits||{})[pid];
-    if(!e || !e.id) return [];
-    var refs=peekSpec(proj, pid).refs.map(function(r){ return r.id; });
-    return [e.id, pid].concat(refs).slice(0, CLIP.maxInputs);
-  }
+  // 예전 이름 유지: 영상에 들어가는 이미지(가공 → 원본 → 레퍼런스).
+  function clipInputs(proj, pid){ return clipPlan(proj, pid).images; }
   function clipInputsHint(proj, pid){
-    var n=peekSpec(proj, pid).refs.length, used=Math.min(n, CLIP.maxInputs-2);
-    var t="영상 레퍼런스: 가공 · 원본"+(used ? " · 레퍼런스 "+(used===1 ? "1번" : "1~"+used+"번") : "");
-    if(n>used) t+=" (Kling 한도가 "+CLIP.maxInputs+"장이라 레퍼런스 "+(used+1)+"번부터는 빠져요)";
+    var plan=clipPlan(proj, pid), parts=["가공", "원본"];
+    var ns=plan.refs.map(function(x){ return x.n; });
+    if(ns.length) parts.push("레퍼런스 "+ns.join("·")+"번");
+    plan.elements.forEach(function(el){ parts.push(el.name); });
+    var t="영상에 들어가는 것: "+parts.join(" · ")+" ("+plan.total+"/"+CLIP.maxInputs+")";
+    if(plan.dropped.length) t+=" — 자리가 없어 레퍼런스 "+plan.dropped.join("·")+"번은 빠져요";
+    if(plan.over) t+=" — 최대 "+CLIP.maxInputs+"개라 프롬프트에서 부른 레퍼런스나 요소를 줄여야 보낼 수 있어요";
     return t;
   }
   // Kling 이미지 조건: 가로·세로 300px 이상, 비율 1:2.5 ~ 2.5:1. 크기를 아는 것만 미리 본다.
   function clipInputProblem(proj, pid){
     var e=(proj.edits||{})[pid] || {}, ph=(proj.photos||[]).find(function(x){ return x.id===pid; }) || {};
-    var refs=peekSpec(proj, pid).refs.slice(0, Math.max(0, CLIP.maxInputs-2));
-    var list=[["가공 사진", e]].concat([["원본", ph]]).concat(refs.map(function(r,j){ return ["레퍼런스 "+(j+1)+"번", r]; }));
+    var list=[["가공 사진", e], ["원본", ph]].concat(clipPlan(proj, pid).refs.map(function(r){ return ["레퍼런스 "+r.n+"번", r]; }));
     for(var k=0;k<list.length;k++){
       var w=+list[k][1].w||0, h=+list[k][1].h||0;
       if(!(w>0 && h>0)) continue;
@@ -3163,6 +3344,20 @@
       if(Math.max(w,h)/Math.min(w,h)>CLIP.maxRatio) return list[k][0]+" 비율이 너무 길어요 ("+w+"×"+h+"). Kling 은 1:2.5 ~ 2.5:1 까지만 받아요.";
     }
     return "";
+  }
+  // 보내기 전에 막아야 하는 것: 7개 초과, Kling 등록이 안 된 요소.
+  function clipBlocker(proj, pid){
+    var plan=clipPlan(proj, pid);
+    if(plan.over) return "영상에 넣을 이미지·요소가 "+plan.total+"개예요 (최대 "+CLIP.maxInputs+"개). 요소를 줄여주세요.";
+    for(var k=0;k<plan.elements.length;k++){
+      var el=plan.elements[k], st=elemState(proj, el);
+      if(st==="ready") continue;
+      if(st==="pending") return "["+el.name+"] — Kling 등록이 아직 안 끝났어요.";
+      if(st==="stale") return "["+el.name+"] — 사진이 바뀌어서 Kling 에 다시 등록해야 해요.";
+      if(st==="failed") return "["+el.name+"] — Kling 등록이 실패했어요. 다시 등록해주세요.";
+      return "["+el.name+"] — Kling 에 아직 등록하지 않았어요.";
+    }
+    return clipInputProblem(proj, pid);
   }
   // 영상 길이는 사진마다 키보드로 적는다. 비우면 5초. 3~15 정수가 아니면 null(만들기 전에 막는다).
   function clipDuration(proj, pid){
@@ -3176,10 +3371,11 @@
   function clipRequest(proj, pid){
     var e=(proj.edits||{})[pid];
     if(!e || !e.id || !peekSpec(proj, pid).vprompt.trim()) return null;
-    var inputs=clipInputs(proj, pid);
+    var plan=clipPlan(proj, pid);
     return {
       action:"start", projectId:proj.id,
-      edited:inputs[0], original:inputs[1], refs:inputs.slice(2),
+      edited:plan.images[0], original:plan.images[1], refs:plan.images.slice(2),
+      elements:plan.elements.map(function(el){ return el.kling && el.kling.elementId ? String(el.kling.elementId) : ""; }),
       prompt:clipPromptText(proj, pid), duration:clipDuration(proj, pid)
     };
   }
@@ -3200,16 +3396,19 @@
   function clipJobIds(proj){ return Object.keys((proj && proj.clipJobs) || {}); }
 
   // 한 줄의 영상화 칸: 프롬프트 · 레퍼런스 안내 · 영상 만들기/지우기.
+  function clipHintText(proj, pid){
+    return (proj.edits||{})[pid] ? clipInputsHint(proj, pid) : "가공 사진을 만들면 영상을 만들 수 있어요.";
+  }
   function clipControls(p, i, sp, cs){
-    var hasEdit=!!((current.edits||{})[p.id]);
     var h='<div class="eclip">'+
       '<label class="elab" for="vp_'+i+'">영상화</label>'+
-      '<textarea id="vp_'+i+'" data-vprompt="'+esc(p.id)+'" placeholder="'+(i+1)+'번 가공 사진이 어떻게 움직일지 적어주세요">'+esc(sp.vprompt)+'</textarea>'+
+      '<textarea id="vp_'+i+'" data-vprompt="'+esc(p.id)+'" placeholder="'+(i+1)+'번 가공 사진이 어떻게 움직일지 적어주세요. @ 를 치면 요소·사진을 고를 수 있어요">'+esc(sp.vprompt)+'</textarea>'+
+      '<p class="hint mwarn" data-vwarn="'+esc(p.id)+'">'+esc(mentionWarnings(current, p.id, sp.vprompt, "clip").join(" · "))+'</p>'+
       '<div class="vdur"><label for="vd_'+i+'">영상 길이</label>'+
         '<input id="vd_'+i+'" data-vdur="'+esc(p.id)+'" type="number" inputmode="numeric" min="'+CLIP.minDur+'" max="'+CLIP.maxDur+'" step="1" '+
         'placeholder="'+CLIP.dur+'" value="'+esc(sp.vdur)+'"'+(clipDuration(current, p.id)===null ? ' class="bad"' : '')+'>'+
         '<span>초 ('+CLIP.minDur+'~'+CLIP.maxDur+', 비우면 '+CLIP.dur+')</span></div>'+
-      '<p class="hint">'+esc(hasEdit ? clipInputsHint(current, p.id) : "가공 사진을 만들면 영상을 만들 수 있어요.")+'</p>'+
+      '<p class="hint" data-vhint="'+esc(p.id)+'">'+esc(clipHintText(current, p.id))+'</p>'+
       '<div class="ebtns">'+
         '<button type="button" data-clip="'+i+'"'+(cs.canMake && !editBusy ? '' : ' disabled')+'>'+
           (cs.job ? '영상 만드는 중' : cs.clip ? '영상 다시 만들기' : '영상 만들기')+'</button>'+
@@ -3259,7 +3458,7 @@
       clipErrors[pid]=(idx+1)+"번 영상 길이는 "+CLIP.minDur+"~"+CLIP.maxDur+"초 사이 정수로 적어주세요.";
       renderClipsSoon(proj); return;
     }
-    var bad=clipInputProblem(proj, pid);
+    var bad=clipBlocker(proj, pid);
     if(bad){ clipErrors[pid]=bad; renderClipsSoon(proj); return; }
     if(body.prompt.length>CLIP.maxPrompt){
       clipErrors[pid]="영상화 프롬프트가 너무 길어요 (앞 문장 포함 "+body.prompt.length+"자 / 최대 "+CLIP.maxPrompt+"자).";
@@ -3267,7 +3466,7 @@
     }
     delete clipErrors[pid];
     // 응답 오기 전에 버튼부터 잠근다. 두 번 눌러 요금이 두 번 나가지 않게.
-    var job={op:null, at:Date.now(), dur:body.duration, fromEdit:body.edited, inputs:2+body.refs.length};
+    var job={op:null, at:Date.now(), dur:body.duration, fromEdit:body.edited, inputs:2+body.refs.length+body.elements.length};
     proj.clipJobs[pid]=job;
     renderClipsSoon(proj);
     try{
@@ -3298,20 +3497,25 @@
   }
   function clipClockTick(){
     var ids=clipJobIds(current);
-    if(!ids.length){ clearInterval(clipClock); clipClock=null; return; }
+    if(!ids.length && !elemPendingKeys(current).length){ clearInterval(clipClock); clipClock=null; return; }
     ids.forEach(function(pid){
       var el=view.querySelector('[data-cliptime="'+pid.replace(/"/g,'\\"')+'"]');
       if(el) el.textContent=clipElapsed(current.clipJobs[pid]);
     });
   }
+  // 영상 작업과 요소 등록을 같은 타이머로 확인한다.
+  function elemPendingKeys(proj){
+    return elemList(proj).filter(function(el){ return el.kling && el.kling.status==="pending"; }).map(function(el){ return el.key; });
+  }
   async function clipPollTick(){
     clipPollTimer=null;
     var proj=current;
     if(!proj || !uid) return;
-    var ids=clipJobIds(proj);
-    if(!ids.length) return;
-    await Promise.all(ids.map(function(pid){ return clipCheck(proj, pid); }));
-    if(clipJobIds(current).length) ensureClipPoll();
+    var ids=clipJobIds(proj), keys=elemPendingKeys(proj);
+    if(!ids.length && !keys.length) return;
+    await Promise.all(ids.map(function(pid){ return clipCheck(proj, pid); })
+      .concat(keys.map(function(k){ return elemCheck(proj, k); })));
+    if(clipJobIds(current).length || elemPendingKeys(current).length) ensureClipPoll();
   }
 
   async function clipCheck(proj, pid){
@@ -3397,6 +3601,426 @@
     renderEdit(current);
   }
 
+  // ---------- ⑨ 요소 관리 ----------
+  function newElemKey(){ return "el"+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+
+  function elemAdd(){
+    current.elements=current.elements||[];
+    var key=newElemKey();
+    current.elements.push({key:key, name:"", desc:"", front:null, angles:[]});
+    flushSave();
+    renderEdit(current);
+    var inp=view.querySelector('input[data-elname="'+key+'"]');
+    if(inp) inp.focus();
+  }
+
+  // 사진 올리기: 정면이 없으면 첫 장이 정면, 나머지는 다른 각도(최대 3장). Kling 조건에 안 맞으면 거른다.
+  async function elemAddPhotos(files, key){
+    if(!uid){ toast("로그인이 필요해요"); return; }
+    var proj=current, el=elemByKey(proj, key);
+    if(!el) return;
+    var done=0, fail=0, msg="";
+    for(var k=0;k<files.length;k++){
+      var room=(el.front ? 0 : 1)+ELEM.maxAngles-(el.angles||[]).length;
+      if(room<=0){ msg="요소 사진은 정면 1장 + 다른 각도 "+ELEM.maxAngles+"장까지예요"; break; }
+      toast("요소 사진 올리는 중 "+(k+1)+"/"+files.length);
+      try{
+        var r=await shrink(files[k], "element");
+        if(Math.min(r.w, r.h)<ELEM.minSide){ fail++; msg="가로·세로 "+ELEM.minSide+"px 이상 사진만 쓸 수 있어요 (Kling 조건)"; continue; }
+        if(Math.max(r.w, r.h)/Math.min(r.w, r.h)>ELEM.maxRatio){ fail++; msg="너무 길쭉한 사진은 쓸 수 없어요 (1:2.5 ~ 2.5:1, Kling 조건)"; continue; }
+        var up=await storeUpload(newPath(proj.id, "element", "jpg"), r.blob, "image/jpeg");
+        var item={id:up.id, w:r.w, h:r.h, size:up.sizeBytes};
+        if(!el.front) el.front=item;
+        else { el.angles=el.angles||[]; el.angles.push(item); }
+        done++;
+      }catch(e){
+        fail++;
+        if(/quota|exceed|413/i.test(String(e && e.message))){ msg="저장 공간이 꽉 찼어요"; break; }
+      }
+    }
+    await persist(proj);
+    if(current===proj) renderEdit(proj);
+    toast(msg || (fail ? done+"장 올렸고 "+fail+"장 실패했어요" : done+"장 올렸어요"));
+  }
+
+  // idx 0 = 정면. 정면을 지우면 첫 번째 다른 각도가 정면이 된다.
+  async function elemDropPhoto(key, idx){
+    var el=elemByKey(current, key);
+    if(!el) return;
+    var gone;
+    if(idx===0){ gone=el.front; el.front=(el.angles||[]).shift()||null; }
+    else gone=(el.angles||[]).splice(idx-1, 1)[0];
+    await persist(current);
+    if(gone && gone.id){ try{ await storeDelete(gone.id); }catch(e){} }
+    renderEdit(current);
+  }
+
+  // 이 숙소 모든 프롬프트(사진 가공·영상화)의 [from] 을 [to] 로.
+  function renameMentions(proj, from, to){
+    var a="["+from+"]", b="["+to+"]", n=0;
+    Object.keys(proj.editSpecs||{}).forEach(function(pid){
+      var sp=proj.editSpecs[pid];
+      ["prompt", "vprompt"].forEach(function(k){
+        if(typeof sp[k]==="string" && sp[k].indexOf(a)>=0){ sp[k]=sp[k].split(a).join(b); n++; }
+      });
+    });
+    return n;
+  }
+  // 이 요소를 쓰는 줄 번호
+  function elemUsage(proj, name){
+    var a="["+name+"]", rows=[];
+    (proj.photos||[]).forEach(function(p, i){
+      var sp=(proj.editSpecs||{})[p.id];
+      if(sp && (String(sp.prompt||"").indexOf(a)>=0 || String(sp.vprompt||"").indexOf(a)>=0)) rows.push(i+1);
+    });
+    return rows;
+  }
+  // 이름 바꾸기: 규칙에 맞으면 [옛이름] 도 같이 바꾼다. 안 맞으면 이유를 남기고 false.
+  function elemRename(proj, key, name){
+    var el=elemByKey(proj, key);
+    if(!el) return false;
+    name=String(name||"").trim();
+    if(name===el.name){ delete elemErrors[key]; delete elemDrafts[key]; return true; }
+    var bad=elemNameProblem(proj, name, key);
+    if(bad){ elemErrors[key]=bad; elemDrafts[key]=name; return false; }
+    var old=el.name;
+    el.name=name;
+    delete elemErrors[key]; delete elemDrafts[key];
+    if(old) renameMentions(proj, old, name);
+    return true;
+  }
+
+  // 지우기: 쓰는 줄이 있으면 한 번 묻고, 그 줄의 [이름] 은 [삭제됨] 으로 바꾼다.
+  async function elemDelete(key){
+    var el=elemByKey(current, key);
+    if(!el) return;
+    var rows=el.name ? elemUsage(current, el.name) : [];
+    var q=rows.length
+      ? "「"+el.name+"」 요소를 "+rows.join("·")+"번 줄에서 쓰고 있어요.\n지우면 그 줄의 ["+el.name+"] 은 [삭제됨] 으로 바뀌어요. 지울까요?"
+      : "「"+(el.name||"이름 없는")+"」 요소를 지울까요?";
+    if(!confirm(q)) return;
+    if(el.name) renameMentions(current, el.name, "삭제됨");
+    current.elements=elemList(current).filter(function(x){ return x.key!==key; });
+    delete elemErrors[key]; delete elemDrafts[key];
+    await persist(current);
+    elemPhotos(el).forEach(function(x){ storeDelete(x.id).catch(function(){}); });
+    // Kling 쪽 등록도 지운다. 실패해도 화면 쪽 삭제는 그대로다.
+    if(el.kling && el.kling.elementId) klingElementDelete(el.kling.elementId);
+    renderEdit(current);
+  }
+  function klingElementDelete(elementId){
+    api(FN.clip,{method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"element_delete", elementId:String(elementId)})}).catch(function(){});
+  }
+
+  // Kling 등록: 작업만 걸고 돌아온다. 결과는 clipPollTick → elemCheck 가 확인한다.
+  async function elemRegister(key){
+    var proj=current, el=elemByKey(proj, key);
+    if(!el || elemInflight[key]) return;
+    var st=elemState(proj, el);
+    if(st==="draft"){ elemErrors[key]="이름·설명·정면 사진·다른 각도 사진(1장 이상)을 채워주세요."; renderClipsSoon(proj); return; }
+    if(st==="pending" || st==="ready") return;
+    var prev=el.kling || null;
+    var body={action:"element_create", projectId:proj.id, name:el.name, desc:String(el.desc||"").trim(),
+      front:el.front.id, angles:(el.angles||[]).map(function(x){ return x.id; })};
+    var job={status:"pending", taskId:null, sig:elemSig(el), at:Date.now(),
+      prevElementId: prev && prev.elementId ? String(prev.elementId) : ""};
+    elemInflight[key]=true;
+    delete elemErrors[key];
+    el.kling=job;
+    renderClipsSoon(proj);
+    try{
+      var r=await api(FN.clip,{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      var t=await r.text(), j=null;
+      try{ j=JSON.parse(t); }catch(e){}
+      if(!r.ok || !j || !j.operation || !j.operation.taskId){
+        var msg=(j && (j.message||j.error)) || t.slice(0,160) || ("HTTP "+r.status);
+        if(r.status===404) msg="영상 함수(lodging-reels-clip)가 아직 배포되지 않았어요.";
+        throw new Error(msg);
+      }
+      if(el.kling===job){
+        job.taskId=String(j.operation.taskId);
+        await persist(proj);
+        ensureClipPoll();
+      }
+    }catch(e){
+      if(el.kling===job) el.kling=prev;
+      elemErrors[key]="Kling 등록 요청 실패: "+((e && e.message) || String(e));
+    }finally{
+      delete elemInflight[key];
+    }
+    renderClipsSoon(proj);
+  }
+
+  async function elemCheck(proj, key){
+    var el=elemByKey(proj, key), k=el && el.kling;
+    if(!k || k.status!=="pending" || elemInflight[key]) return;
+    var done=async function(next, msg){
+      if(el.kling!==k) return;
+      el.kling=next;
+      if(msg) elemErrors[key]=msg; else delete elemErrors[key];
+      await persist(proj);
+      // 프롬프트를 적는 중이어도 상태 줄은 바로 바뀌게(화면 전체를 다시 그리지 않는다).
+      if(current===proj) elemRefreshLive();
+    };
+    if(!k.taskId){
+      if(Date.now()-k.at>120000) await done({status:"failed", msg:"요청이 중간에 끊겼어요", sig:k.sig, at:Date.now()});
+      return;
+    }
+    if(Date.now()-k.at>ELEM.giveUpMs){
+      await done({status:"failed", msg:"30분 넘게 안 끝났어요", sig:k.sig, at:Date.now()});
+      return;
+    }
+    elemInflight[key]=true;
+    try{
+      var r=await api(FN.clip,{method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"element_status", projectId:proj.id, operation:{taskId:k.taskId}})});
+      var t=await r.text(), j=null;
+      try{ j=JSON.parse(t); }catch(e){}
+      if(!r.ok || !j || !j.status){
+        if(r.status>=400 && r.status<500 && r.status!==429){
+          await done({status:"failed", msg:(j && (j.message||j.error)) || ("HTTP "+r.status), sig:k.sig, at:Date.now()});
+        }
+        return;
+      }
+      if(j.status==="pending") return;
+      if(j.status==="ready" && j.elementId){
+        await done({status:"ready", elementId:String(j.elementId), taskId:k.taskId, sig:k.sig, at:Date.now()});
+        if(k.prevElementId && k.prevElementId!==String(j.elementId)) klingElementDelete(k.prevElementId);
+        if(current===proj) toast("「"+el.name+"」 Kling 등록이 끝났어요");
+      }else{
+        await done({status:"failed", msg:j.message || j.error || "알 수 없는 오류", sig:k.sig, at:Date.now()});
+      }
+    }catch(e){
+      console.error("element status failed", e);
+    }finally{
+      delete elemInflight[key];
+    }
+  }
+
+  function elemSection(){
+    var els=elemList(current);
+    var h='<div class="elems"><label class="elab">요소 <span>이 숙소에서 쓸 사람·물건</span></label>'+
+      '<p class="hint" style="margin:0 0 4px">정면 1장 + 다른 각도 1~'+ELEM.maxAngles+'장, 이름·설명을 넣고 Kling 에 등록해요. '+
+      '프롬프트에 [이름] 으로 쓰면(@ 로 골라도 돼요) 사진 가공에는 이 사진들이 레퍼런스로, 영상화에는 Kling 요소로 들어가요.</p>';
+    els.forEach(function(el){ h+=elemCard(el); });
+    h+='<button type="button" class="eadd" id="elemadd" style="margin-top:8px">+ 요소 추가</button></div>';
+    return h;
+  }
+  function elemCard(el){
+    var ph=elemPhotos(el), key=esc(el.key);
+    var h='<div class="elem" data-elem="'+key+'"><div class="elem-ph">';
+    ph.forEach(function(x, j){
+      h+='<div class="eref">'+previewImg(blobUrl(x.id), (el.name||"요소")+(j ? " 다른 각도 "+j : " 정면"))+
+         '<i>'+(j ? "각도 "+j : "정면")+'</i>'+
+         '<button type="button" data-elphdel="'+key+':'+j+'" aria-label="요소 사진 지우기">×</button></div>';
+    });
+    if(ph.length<1+ELEM.maxAngles){
+      h+='<button type="button" class="eadd" data-elpick="'+key+'">+ '+
+         (el.front ? '다른 각도 ('+(el.angles||[]).length+'/'+ELEM.maxAngles+')' : '정면 사진')+'</button>'+
+         '<input class="sr" type="file" accept="image/*" multiple data-elfile="'+key+'">';
+    }
+    var draft=Object.prototype.hasOwnProperty.call(elemDrafts, el.key);
+    h+='</div><div class="elem-f">'+
+      '<input class="nm'+(draft ? ' bad' : '')+'" type="text" data-elname="'+key+'" maxlength="'+ELEM.nameMax+'" placeholder="이름 (예: 아이)" value="'+
+        esc(draft ? elemDrafts[el.key] : (el.name||""))+'" aria-label="요소 이름" autocomplete="off">'+
+      '<input type="text" data-eldesc="'+key+'" maxlength="'+ELEM.descMax+'" placeholder="설명 (예: 7세 여자아이, 단발머리)" value="'+esc(el.desc||"")+'" aria-label="요소 설명" autocomplete="off">'+
+      '</div>';
+    return h+'<div data-elstate="'+key+'">'+elemStateHtml(el)+'</div></div>';
+  }
+  // 등록 상태 · 버튼 · 오류. 이름·설명을 적는 동안에는 이 부분만 다시 그린다.
+  function elemStateHtml(el){
+    var st=elemState(current, el), k=el.kling || {}, key=esc(el.key), h='';
+    var label={
+      draft:"Kling 등록 전 — 이름·설명·정면·다른 각도 사진을 채워주세요",
+      "new":"Kling 등록 전 — 등록해야 영상에 쓸 수 있어요 (사진 가공은 바로 돼요)",
+      pending:"Kling 등록 중…",
+      ready:"Kling 준비됨",
+      failed:"Kling 등록 실패"+(k.msg ? ": "+k.msg : ""),
+      stale:"사진이 바뀌었어요 — 다시 등록해야 영상에 써요"
+    }[st];
+    var cls=st==="ready" ? " ok" : (st==="failed" || st==="stale") ? " bad" : "";
+    h+='<div class="elem-k"><span class="st'+cls+'">'+esc(label)+'</span>'+
+      (st==="new" || st==="failed" || st==="stale"
+        ? '<button type="button" class="primary" data-elreg="'+key+'">'+(st==="new" ? "Kling 등록" : "다시 등록")+'</button>' : '')+
+      '<button type="button" class="ghost danger" data-eldel="'+key+'">지우기</button></div>';
+    if(elemErrors[el.key]) h+='<p class="status bad">'+esc(elemErrors[el.key])+'</p>';
+    return h;
+  }
+
+  // 요소 칸을 고친 뒤 화면 전체를 다시 그리지 않는다(적고 있는 칸의 커서·포커스 유지).
+  // 상태 줄, 각 사진 줄의 프롬프트 글자([옛이름] → [새이름])·안내·요소 묶음만 고친다.
+  function elemRefreshLive(){
+    if(!current) return;
+    Array.prototype.forEach.call(view.querySelectorAll("[data-elstate]"),function(box){
+      var el=elemByKey(current, box.dataset.elstate);
+      if(el) box.innerHTML=elemStateHtml(el);
+    });
+    (current.photos||[]).forEach(function(p){ rowRefreshLive(p.id); });
+  }
+  function rowRefreshLive(pid){
+    var sp=peekSpec(current, pid), q='="'+String(pid).replace(/"/g,'\\"')+'"]';
+    var one=function(attr){ return view.querySelector("["+attr+q); };
+    var ta=one("data-eprompt"), va=one("data-vprompt");
+    if(ta && document.activeElement!==ta && ta.value!==sp.prompt) ta.value=sp.prompt;
+    if(va && document.activeElement!==va && va.value!==sp.vprompt) va.value=sp.vprompt;
+    var ew=one("data-ewarn"), lk=one("data-elinks"), vw=one("data-vwarn"), vh=one("data-vhint");
+    if(ew) ew.textContent=mentionWarnings(current, pid, sp.prompt, "edit").join(" · ");
+    if(lk) lk.innerHTML=elemLinksHtml(current, pid);
+    if(vw) vw.textContent=mentionWarnings(current, pid, sp.vprompt, "clip").join(" · ");
+    if(vh) vh.textContent=clipHintText(current, pid);
+  }
+
+  // 요소 칸 이벤트는 #view 에 한 번만 건다(카드가 다시 그려져도 그대로 동작).
+  function elemTarget(ev, attr){
+    return ev.target && ev.target.closest ? ev.target.closest("["+attr+"]") : null;
+  }
+  view.addEventListener("click",function(ev){
+    if(!current) return;
+    var b;
+    if((b=elemTarget(ev, "data-elpick"))){
+      var inp=view.querySelector('input[data-elfile="'+b.dataset.elpick+'"]');
+      if(inp) inp.click();
+    }else if((b=elemTarget(ev, "data-elphdel"))){
+      var a=b.dataset.elphdel, at=a.lastIndexOf(":");
+      if(confirm("이 요소 사진을 지울까요?")) elemDropPhoto(a.slice(0, at), +a.slice(at+1));
+    }else if((b=elemTarget(ev, "data-elreg"))){
+      elemRegister(b.dataset.elreg);
+    }else if((b=elemTarget(ev, "data-eldel"))){
+      elemDelete(b.dataset.eldel);
+    }else if(ev.target && ev.target.id==="elemadd"){
+      elemAdd();
+    }
+  });
+  view.addEventListener("change",function(ev){
+    if(!current) return;
+    var t=ev.target;
+    if(t.matches && t.matches("input[data-elfile]")){
+      if(t.files && t.files.length){
+        view.classList.add("busy");
+        elemAddPhotos(Array.prototype.slice.call(t.files), t.dataset.elfile)
+          .finally(function(){ view.classList.remove("busy"); });
+      }
+    }else if(t.matches && t.matches("input[data-elname]")){
+      var ok=elemRename(current, t.dataset.elname, t.value);
+      t.classList.toggle("bad", !ok);
+      if(ok) t.value=(elemByKey(current, t.dataset.elname) || {}).name || "";
+      elemRefreshLive();
+      flushSave();
+    }else if(t.matches && t.matches("input[data-eldesc]")){
+      flushSave();
+    }
+  });
+  view.addEventListener("input",function(ev){
+    if(!current) return;
+    var t=ev.target, el;
+    if(t.matches && t.matches("input[data-eldesc]") && (el=elemByKey(current, t.dataset.eldesc))){
+      el.desc=t.value;
+      elemRefreshLive();
+      autosave();
+    }else if(t.matches && t.matches("input[data-elname]")){
+      t.classList.remove("bad");
+    }
+  });
+
+  // 사진 가공 줄의 레퍼런스 칸에 붙는 요소 묶음(프롬프트에 쓴 요소만). 지우려면 프롬프트에서 [이름] 을 지운다.
+  function elemLinksHtml(proj, pid){
+    var plan=editRefPlan(proj, pid);
+    var h=plan.groups.map(function(g){
+      var all=elemPhotos(g.el);
+      return '<div class="eref elink" title="요소 '+esc(g.el.name)+' · 사진 '+all.length+'장">'+
+        '<img src="'+esc(blobUrl(all[0].id))+'" alt=""><b>'+esc(g.el.name)+' ×'+all.length+'</b></div>';
+    }).join("");
+    if(plan.groups.length) h+='<span class="ecount'+(plan.over ? ' bad' : '')+'">레퍼런스 '+plan.ids.length+'/'+EDIT.maxRefs+'</span>';
+    return h;
+  }
+
+  // ---------- @ 목록 ----------
+  // 프롬프트 칸에서 @ 를 치면 칸 바로 아래에 요소·사진 목록을 띄운다. 고르면 @… 자리에 [이름] 이 들어간다.
+  var mpick=null;
+  function mentionOptions(proj, pid, stage, q){
+    var opts=[];
+    elemList(proj).forEach(function(el){
+      if(!el.name || elemNameProblem(proj, el.name, el.key)) return;
+      var f=elemPhotos(el)[0];
+      opts.push({label:el.name, sub:"요소", thumb:f && f.id});
+    });
+    if(stage==="clip"){ var e=(proj.edits||{})[pid]; opts.push({label:"가공", sub:"가공 사진", thumb:e && e.id}); }
+    opts.push({label:"원본", sub:"원본 사진", thumb:pid});
+    peekSpec(proj, pid).refs.forEach(function(r, j){ opts.push({label:"레퍼런스"+(j+1), sub:"레퍼런스", thumb:r.id}); });
+    q=String(q||"");
+    return opts.filter(function(o){ return !q || o.label.indexOf(q)>=0; });
+  }
+  // 커서 앞이 @… 이면 {start, q}. 메일 주소(a@b)처럼 영문·숫자 바로 뒤의 @ 는 빼고 한글 뒤는 받는다.
+  function mentionQuery(text, caret){
+    var m=String(text||"").slice(0, caret).match(/(^|[^A-Za-z0-9._%+-])@([^\s@\[\]]{0,20})$/);
+    return m ? {start:caret-m[0].length+m[1].length, q:m[2]} : null;
+  }
+  // @… 을 [이름] 으로 바꾼 글과 새 커서 위치
+  function mentionInsert(text, start, caret, label){
+    var ins="["+label+"]";
+    return {text:text.slice(0, start)+ins+text.slice(caret), caret:start+ins.length};
+  }
+  function mentionClose(){
+    if(mpick && mpick.box && mpick.box.parentNode) mpick.box.parentNode.removeChild(mpick.box);
+    mpick=null;
+  }
+  function mentionUpdate(ta, pid, stage){
+    var mq=mentionQuery(ta.value, ta.selectionStart==null ? ta.value.length : ta.selectionStart);
+    if(!mq || ta.selectionStart!==ta.selectionEnd){ mentionClose(); return; }
+    var items=mentionOptions(current, pid, stage, mq.q);
+    if(!items.length){ mentionClose(); return; }
+    if(!mpick || mpick.ta!==ta){
+      mentionClose();
+      var box=document.createElement("div");
+      box.className="mbox"; box.setAttribute("role", "listbox");
+      ta.insertAdjacentElement("afterend", box);
+      mpick={ta:ta, box:box, pid:pid, stage:stage, sel:0};
+      // 누르는 동안 칸에서 포커스가 빠지지 않게
+      box.addEventListener("pointerdown", function(ev){ ev.preventDefault(); });
+      box.addEventListener("click", function(ev){
+        var b=ev.target.closest ? ev.target.closest("button[data-mi]") : null;
+        if(b) mentionPick(+b.dataset.mi);
+      });
+    }
+    mpick.items=items; mpick.start=mq.start;
+    if(mpick.sel>=items.length) mpick.sel=0;
+    mentionDraw();
+  }
+  function mentionDraw(){
+    if(!mpick) return;
+    mpick.box.innerHTML=mpick.items.map(function(o, k){
+      return '<button type="button" role="option" data-mi="'+k+'"'+(k===mpick.sel ? ' class="on" aria-selected="true"' : '')+'>'+
+        (o.thumb ? '<img src="'+esc(blobUrl(o.thumb))+'" alt="">' : '<span class="noimg"></span>')+
+        '<span>'+esc(o.label)+'</span><small>'+esc(o.sub)+'</small></button>';
+    }).join("");
+  }
+  function mentionPick(k){
+    if(!mpick || !mpick.items[k]) return;
+    var ta=mpick.ta, caret=ta.selectionStart==null ? ta.value.length : ta.selectionStart;
+    var r=mentionInsert(ta.value, mpick.start, caret, mpick.items[k].label);
+    mentionClose();
+    ta.value=r.text;
+    ta.focus();
+    try{ ta.setSelectionRange(r.caret, r.caret); }catch(e){}
+    ta.dispatchEvent(new Event("input", {bubbles:true}));
+  }
+  function mentionKey(ev){
+    if(!mpick || ev.target!==mpick.ta || ev.isComposing) return;
+    if(ev.key==="ArrowDown" || ev.key==="ArrowUp"){
+      ev.preventDefault();
+      var n=mpick.items.length;
+      mpick.sel=(mpick.sel+(ev.key==="ArrowDown" ? 1 : n-1))%n;
+      mentionDraw();
+    }else if(ev.key==="Enter" || ev.key==="Tab"){
+      ev.preventDefault();
+      mentionPick(mpick.sel);
+    }else if(ev.key==="Escape"){
+      ev.preventDefault();
+      mentionClose();
+    }
+  }
+
   function editSection(){
     var ph=current.photos||[], ed=current.edits||{};
     var h='<h2>⑨ 이미지 가공</h2><div class="card">';
@@ -3414,7 +4038,7 @@
        '<pre id="editpreview" style="white-space:pre-wrap;font-size:12px;margin:8px 0 0">'+
        esc(editHead(current, 0)+"\n\n(각 사진의 사용자 프롬프트가 이어서 붙어요. 해당 사진에 레퍼런스가 있으면 Image 2~N 설명 문장이 자동 추가돼요.)")+'</pre>'+
        '<p class="hint" style="margin-top:10px">영상화 프롬프트 앞:</p>'+
-       '<pre id="clippreview" style="white-space:pre-wrap;font-size:12px;margin:4px 0 0">'+esc(clipHead(current, 0)+"\n\n(각 사진의 영상화 프롬프트가 이어서 붙어요. 레퍼런스가 있으면 <<<image_3>>>~ 설명 문장이 자동 추가돼요.)")+'</pre></details>';
+       '<pre id="clippreview" style="white-space:pre-wrap;font-size:12px;margin:4px 0 0">'+esc(clipHead(current, 0)+"\n\n(각 사진의 영상화 프롬프트가 이어서 붙어요. 레퍼런스·요소가 있으면 @image_3~ · @element_1~ 설명 문장이 자동 추가돼요.)")+'</pre></details>';
 
     h+='<label for="f_editQuality">품질 <span>모든 사진 공통</span></label><select id="f_editQuality">'+
        EDIT.qualities.map(function(q){
@@ -3425,8 +4049,10 @@
     h+='<p class="hint"><strong>영상화 · Kling 3.0 Pro · 9:16</strong><br>영상 길이는 줄마다 따로 적어요 ('+CLIP.minDur+'~'+CLIP.maxDur+'초, 비우면 '+CLIP.dur+'초). '+
        '영상은 한 편에 몇 분씩 걸려요. 기다리는 동안 다른 작업을 해도 되고, 새로고침해도 이어서 기다려요. '+
        '길수록 비싸요. 완료된 영상은 ⑪ 편집에서 자동 우선 사용되며, 길이가 부족하면 마젠타 단색으로 나와요.</p>'+
-       '<p class="hint">영상화 프롬프트에서 '+esc("<<<image_1>>>")+' 가공 사진, '+esc("<<<image_2>>>")+' 원본, '+
-       esc("<<<image_3>>>")+'부터 그 사진의 레퍼런스를 가리킬 수 있어요.</p>';
+       '<p class="hint">프롬프트에서 [원본] [가공] [레퍼런스1] [요소이름] 처럼 쓰면 보낼 때 알아서 바꿔요. '+
+       '@ 를 치면 목록에서 고를 수 있어요. ([가공] 은 영상화에서만)</p>';
+
+    h+=elemSection();
 
     var pend=editPending(current).length;
     var dis=editBusy?' disabled':'';
@@ -3458,7 +4084,8 @@
          '</div>'+
          '<div class="eside">'+
            '<label class="elab" for="ep_'+i+'">사진 가공</label>'+
-           '<textarea id="ep_'+i+'" data-eprompt="'+esc(p.id)+'" placeholder="'+(i+1)+'번 사진을 어떻게 바꿀지 적어주세요">'+esc(sp.prompt)+'</textarea>'+
+           '<textarea id="ep_'+i+'" data-eprompt="'+esc(p.id)+'" placeholder="'+(i+1)+'번 사진을 어떻게 바꿀지 적어주세요. @ 를 치면 요소·사진을 고를 수 있어요">'+esc(sp.prompt)+'</textarea>'+
+           '<p class="hint mwarn" data-ewarn="'+esc(p.id)+'">'+esc(mentionWarnings(current, p.id, sp.prompt, "edit").join(" · "))+'</p>'+
            '<div class="erefs">';
       sp.refs.forEach(function(r,j){
         h+='<div class="eref">'+previewImg(blobUrl(r.id),(i+1)+"번 사진의 "+(j+1)+"번 레퍼런스")+
@@ -3469,6 +4096,7 @@
            '<input class="sr" type="file" accept="image/*" multiple id="file_eref_'+i+'" data-eref="'+i+'">';
       }
       h+=  '</div>'+
+           '<div class="erefs elinks" data-elinks="'+esc(p.id)+'">'+elemLinksHtml(current, p.id)+'</div>'+
            '<div class="ebtns">'+
              '<button type="button" data-edit="'+i+'"'+dis+'>'+(e?'다시 만들기':'만들기')+'</button>'+
              (e?'<button type="button" class="ghost" data-unedit="'+i+'"'+dis+'>결과 지우기</button>':'')+
@@ -3530,6 +4158,8 @@
     if(idx<0) throw new Error("사진이 없어요");
     var body=editRequest(proj, photoId);
     if(!body) throw new Error((idx+1)+"번 사진 프롬프트가 비었어요");
+    var plan=editRefPlan(proj, photoId);
+    if(plan.over) throw new Error((idx+1)+"번 사진: 레퍼런스와 요소 사진이 합쳐서 "+plan.ids.length+"장이에요 (최대 "+EDIT.maxRefs+"장). 요소나 레퍼런스를 줄여주세요.");
     // 이전 프로젝트에 사진 크기 메타데이터가 없을 때도 원본에서 읽어 온다.
     if(!(body.baseW>0 && body.baseH>0)){
       var original=await loadImg(blobUrl(photoId));
@@ -3709,6 +4339,7 @@
     h+='<p class="status" id="savemark">저장됨</p>';
     h+='<h2>다음</h2><div class="card"><pre id="guide"></pre></div>';
     h+='<div class="row" style="margin-top:14px"><button class="ghost danger" id="del">이 숙소 삭제</button></div>';
+    mentionClose();
     view.innerHTML=h;
     updateGuide();
 
@@ -3923,18 +4554,31 @@
       var pv=document.getElementById("editpreview");
       if(pv) pv.textContent=editHead(current,0)+"\n\n(각 사진의 사용자 프롬프트가 이어서 붙어요. 해당 사진에 레퍼런스가 있으면 Image 2~N 설명 문장이 자동 추가돼요.)";
       var cpv=document.getElementById("clippreview");
-      if(cpv) cpv.textContent=clipHead(current, 0)+"\n\n(각 사진의 영상화 프롬프트가 이어서 붙어요. 레퍼런스가 있으면 <<<image_3>>>~ 설명 문장이 자동 추가돼요.)";
+      if(cpv) cpv.textContent=clipHead(current, 0)+"\n\n(각 사진의 영상화 프롬프트가 이어서 붙어요. 레퍼런스·요소가 있으면 @image_3~ · @element_1~ 설명 문장이 자동 추가돼요.)";
       flushSave();
     });
     var eq=document.getElementById("f_editQuality");
     if(eq) eq.addEventListener("change",function(){ current.editQuality=eq.value; flushSave(); });
-    Array.prototype.forEach.call(view.querySelectorAll("[data-eprompt]"),function(ta){
+    // 프롬프트 칸: 적는 대로 줄 안내·요소 묶음을 고치고, @ 를 치면 목록을 띄운다.
+    function bindPrompt(ta, pid, stage){
       ta.addEventListener("input",function(){
-        specOf(current, ta.dataset.eprompt).prompt=ta.value;
-        refreshEditAll();
+        var sp=specOf(current, pid);
+        if(stage==="edit"){ sp.prompt=ta.value; refreshEditAll(); }
+        else sp.vprompt=ta.value;
+        rowRefreshLive(pid);
+        mentionUpdate(ta, pid, stage);
         autosave();
       });
-      ta.addEventListener("blur",function(){ flushSave(); });
+      ta.addEventListener("keydown", mentionKey);
+      ta.addEventListener("click",function(){ mentionUpdate(ta, pid, stage); });
+      ta.addEventListener("blur",function(){
+        flushSave();
+        // 목록을 눌러 포커스가 잠깐 빠지는 경우(모바일)를 위해 조금 늦게 닫는다.
+        setTimeout(function(){ if(mpick && mpick.ta===ta && document.activeElement!==ta) mentionClose(); }, 200);
+      });
+    }
+    Array.prototype.forEach.call(view.querySelectorAll("[data-eprompt]"),function(ta){
+      bindPrompt(ta, ta.dataset.eprompt, "edit");
     });
     Array.prototype.forEach.call(view.querySelectorAll("input[data-eref]"),function(inp){
       inp.addEventListener("change",function(){
@@ -3989,11 +4633,7 @@
       inp.addEventListener("blur",function(){ flushSave(); });
     });
     Array.prototype.forEach.call(view.querySelectorAll("[data-vprompt]"),function(ta){
-      ta.addEventListener("input",function(){
-        specOf(current, ta.dataset.vprompt).vprompt=ta.value;
-        autosave();
-      });
-      ta.addEventListener("blur",function(){ flushSave(); });
+      bindPrompt(ta, ta.dataset.vprompt, "clip");
     });
     Array.prototype.forEach.call(view.querySelectorAll("[data-clip]"),function(b){
       b.addEventListener("click",function(){

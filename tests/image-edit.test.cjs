@@ -165,15 +165,57 @@ function grab(sig){
   return html.slice(start,end+5);
 }
 
+function grabVar(re,name){
+  const m=html.match(re);
+  assert.ok(m,name+" exists");
+  return m[0];
+}
 function box(current){
   const sandbox={current, esc:(v)=>String(v??"")};
   vm.runInNewContext([
+    grabVar(/  var EDIT = \{[\s\S]*?\n  \};\n/,"EDIT"),
+    grabVar(/  var ELEM = \{[^\n]*\n/,"ELEM"),
+    grabVar(/  var MENTION_RE=[^\n]*\n/,"MENTION_RE"),
     grab("srcId(p){"), grab("peekSpec(proj, pid){"), grab("specOf(proj, pid){"),
+    grab("elemList(proj){"), grab("elemByName(proj, name){"), grab("elemPhotos(el){"),
+    grab("mentionsOf(proj, pid, text, stage){"), grab("mentionedElements(proj, pid, text, stage){"),
+    grab("replaceMentions(proj, pid, text, stage, map){"), grab("editRefPlan(proj, pid){"),
+    grab("imagesLabel(from, to){"),
     grab("editHead(proj, refCount){"), grab("editPromptText(proj, pid){"),
     grab("editRequest(proj, pid){"), grab("editPending(proj){"),
   ].join("\n"),sandbox);
   return sandbox;
 }
+
+test("elements named in the prompt join the refs after the row's own; the API accepts element files",()=>{
+  const b=box({});
+  const E=(f)=>UID+"/pabc123/element/"+f+".jpg";
+  const el=(name,slug,n)=>({key:"k"+slug,name,desc:name+" 설명",
+    front:{id:E(slug+"0")},angles:Array.from({length:n-1},(_,i)=>({id:E(slug+(i+1))}))});
+  const proj={photos:[{id:photo,w:1600,h:900}],
+    elements:[el("아이","kid",2),el("강아지","dog",3),el("엄마","mom",2)],
+    editSpecs:{[photo]:{prompt:"[원본] 침대 위에서 [아이]가 [강아지]를 안고 [레퍼런스2] 같은 조명",refs:[{id:ref1},{id:ref2}]}}};
+  const r=b.editRequest(proj,photo);
+  assert.deepEqual([...r.refs],[ref1,ref2,E("kid0"),E("kid1"),E("dog0"),E("dog1"),E("dog2")],
+    "row refs → 아이 → 강아지; 엄마 is not named so it is not sent");
+  assert.match(r.prompt,/Images 2-8 are additional visual references/);
+  assert.match(r.prompt,/ Images 4-5 show "아이": 아이 설명\. Images 6-8 show "강아지": 강아지 설명\./);
+  assert.match(r.prompt,/\n\nImage 1 침대 위에서 아이 \(Images 4-5\)가 강아지 \(Images 6-8\)를 안고 Image 3 같은 조명$/);
+  assert.doesNotMatch(r.prompt,/엄마/);
+
+  // 서버 쪽: 요소 사진 경로(element)는 레퍼런스로 받는다. 남의 폴더는 여전히 거절.
+  const v=lib.validate({base:photo,refs:r.refs,prompt:"x"},UID);
+  assert.equal(v.error,undefined);
+  assert.equal(lib.validate({base:photo,refs:[OTHER+"/pabc123/element/x.jpg"],prompt:"x"},UID).error,"bad_ref");
+  assert.equal(lib.validate({base:UID+"/pabc123/element/x.jpg",refs:[],prompt:"x"},UID).error,"bad_base","an element photo cannot be the base");
+
+  // 15장 넘으면 화면이 보내기 전에 막는다(editOne 이 over 를 본다).
+  proj.editSpecs[photo].refs=Array.from({length:12},(_,i)=>({id:UID+"/pabc123/ref/q"+i+".jpg"}));
+  const plan=b.editRefPlan(proj,photo);
+  assert.equal(plan.ids.length,17);
+  assert.equal(plan.over,true);
+  assert.match(html,/var plan=editRefPlan\(proj, photoId\);\n\s*if\(plan\.over\) throw new Error/);
+});
 
 test("srcId: an edited photo is used downstream, otherwise the original",()=>{
   const b=box({edits:{"a.jpg":{id:"a-edited.jpg"}}});

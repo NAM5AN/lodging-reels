@@ -1,29 +1,43 @@
-// ⑨ 영상화 — Kling 3.0 (Omni, Pro) 를 Kling 공식 API 로 직접 부른다.
+// ⑨ 영상화 + 요소(Element) — Kling 3.0 Omni 를 Kling 공식 API 로 직접 부른다.
 // Supabase Edge Function `lodging-reels-clip` 의 본체. index.ts 는 환경변수만 넘겨준다.
 //
 // Deno 전용 API 를 쓰지 않는다(Request / Response / fetch / crypto 만). 설정은 env 로 받는다.
 // 그래서 tests/clip-function.test.ts 가 가짜 네트워크로 그대로 돌린다.
 //
-// 왜 start → status 두 번에 나누나:
-//   Kling 영상은 몇 분씩 걸린다. Edge Function 요청은 그만큼 붙잡고 있을 수 없다.
-//   start 는 Kling 에 작업만 걸고 task_id 를 바로 돌려준다. 브라우저가 그걸 프로젝트에 저장하고
-//   status 를 몇 초마다 부른다. 끝나면 이 함수가 영상을 받아 사용자 Storage 폴더에 올린다.
+// 근거: Kling 공식 문서(markdown 판)
+//   영상  https://kling.ai/document-api/api/video/3-0-omni/video-omni.md
+//         POST /omni-video/kling-3.0-omni   { contents[], settings{}, options{} }
+//         GET  /tasks?task_ids=<id>          data[].status / outputs[]
+//   요소  https://kling.ai/document-api/api/video/3-0-omni/elements.md
+//         POST /v1/general/advanced-custom-elements          (비동기 작업)
+//         GET  /v1/general/advanced-custom-elements/{id}     task_result.elements[].element_id
+//         POST /v1/general/delete-advanced-elements          { element_id }
+//   인증  Authorization: Bearer <API Key>   도메인 https://api-singapore.klingai.com
 //
-// 왜 Kling 3.0 Omni 인가:
-//   Kling 3.0 에서 레퍼런스 이미지 여러 장으로 영상을 만드는 건 Omni 모델(kling-v3-omni)만 된다.
-//   mode "pro" 가 1080p(Pro). 이미지는 프롬프트에서 <<<image_1>>> 처럼 순서로 가리킨다.
+// 왜 start → status 두 번에 나누나:
+//   Kling 영상·요소 등록은 시간이 걸린다. Edge Function 요청은 그만큼 붙잡고 있을 수 없다.
+//   start 는 작업만 걸고 작업 번호를 바로 돌려준다. 브라우저가 그걸 프로젝트에 저장하고 몇 초마다 확인한다.
+//   영상이 끝나면 이 함수가 영상을 받아 사용자 Storage 폴더에 올린다.
+//
+// 프롬프트에서 입력물은 @id 로 가리킨다. id 는 이 함수가 붙인다:
+//   image_1 가공 사진, image_2 원본, image_3~ 그 사진의 레퍼런스, element_1~ 요소.
 
-export const MODEL = "kling-v3-omni";
-export const MODE = "pro";
+export const VIDEO_PATH = "/omni-video/kling-3.0-omni";
+export const TASKS_PATH = "/tasks";
+export const ELEMENTS_PATH = "/v1/general/advanced-custom-elements";
+export const ELEMENT_DELETE_PATH = "/v1/general/delete-advanced-elements";
+export const RESOLUTION = "1080p";            // Kling 3.0 Pro 화질
 export const ASPECT = "9:16";                 // 릴스 세로 화면
-export const MIN_DURATION = 3;               // Kling 3.0 은 3~15초 정수. 사진마다 따로 적는다.
+export const MIN_DURATION = 3;                // Kling 3.0 은 3~15초 정수. 사진마다 따로 적는다.
 export const MAX_DURATION = 15;
 export const DEFAULT_DURATION = 5;            // 길이를 비워 보내면
-export const MAX_INPUTS = 7;                  // Omni: 영상 입력 없이 이미지 최대 7장
-export const MAX_PROMPT = 2500;               // Kling 프롬프트 한도
+export const MAX_INPUTS = 7;                  // 레퍼런스 이미지 + 요소 합계 (영상 입력이 없을 때)
+export const MAX_PROMPT = 2500;               // Kling 권장 한도
 export const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // lodging-reels 버킷 파일 한도 50MB
+export const ELEMENT_NAME_MAX = 20;
+export const ELEMENT_DESC_MAX = 100;
+export const ELEMENT_ANGLES_MAX = 3;          // 정면 1 + 다른 각도 1~3
 export const DEFAULT_BASE = "https://api-singapore.klingai.com";
-export const ENDPOINT = "/v1/videos/omni-video";
 const BUCKET = "lodging-reels";
 const KLING_TIMEOUT_MS = 30000;
 const VIDEO_FETCH_TIMEOUT_MS = 60000;
@@ -32,6 +46,7 @@ const STORE_TIMEOUT_MS = 60000;
 const IMG_EXT = /\.(jpe?g|png)$/i;            // Kling 은 jpg/png 만 받는다
 const PROJECT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const TASK_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const ELEMENT_ID = /^\d{1,24}$/;
 
 export type Env = {
   klingKey?: string;        // KLINGAI_API_KEY — Bearer 로 그대로 보낸다
@@ -45,9 +60,17 @@ export type Deps = { fetch?: typeof fetch };
 type Fail = { error: string; message: string };
 export type StartInput = {
   projectId: string;
-  inputs: string[];
+  images: string[];         // 가공 → 원본 → 레퍼런스 (Storage 경로)
+  elements: string[];       // Kling element_id
   prompt: string;
   duration: number;
+};
+export type ElementInput = {
+  projectId: string;
+  name: string;
+  desc: string;
+  front: string;
+  angles: string[];
 };
 
 function fail(error: string, message: string): Fail {
@@ -72,15 +95,19 @@ export function publicUrl(supabaseUrl: string, path: string): string {
     path.split("/").map(encodeURIComponent).join("/");
 }
 
-// start 요청 검사. 이미지 순서는 가공 사진(1) → 원본(2) → 그 사진의 레퍼런스(3~).
-// 프롬프트의 <<<image_N>>> 번호가 이 순서를 가리킨다.
+function projectOf(b: Record<string, unknown>): string | null {
+  const p = b.projectId;
+  return typeof p === "string" && PROJECT_ID.test(p) ? p : null;
+}
+
+// ---------- 영상 ----------
+
+// start 요청 검사. 이미지 순서는 가공 사진 → 원본 → 그 사진의 레퍼런스, 그 뒤에 요소.
 export function validateStart(body: unknown, uid: string): StartInput | Fail {
   if (!body || typeof body !== "object") return fail("bad_json", "요청을 읽지 못했어요.");
   const b = body as Record<string, unknown>;
-  const projectId = b.projectId;
-  if (typeof projectId !== "string" || !PROJECT_ID.test(projectId)) {
-    return fail("bad_project", "숙소 id 가 올바르지 않아요.");
-  }
+  const projectId = projectOf(b);
+  if (!projectId) return fail("bad_project", "숙소 id 가 올바르지 않아요.");
   const inProject = (p: string) => p.split("/")[1] === projectId;
   if (!checkPath(b.edited, uid, ["edited"]) || !inProject(b.edited)) {
     return fail("bad_edited", "가공 사진 경로가 올바르지 않아요. 사진을 먼저 만들어주세요.");
@@ -92,9 +119,16 @@ export function validateStart(body: unknown, uid: string): StartInput | Fail {
   for (const r of refs) {
     if (!checkPath(r, uid, ["ref"]) || !inProject(r)) return fail("bad_ref", "레퍼런스 경로가 올바르지 않아요.");
   }
-  const inputs = [b.edited, b.original, ...refs] as string[];
-  if (inputs.length > MAX_INPUTS) {
-    return fail("too_many_refs", "영상 레퍼런스는 가공·원본 포함 " + MAX_INPUTS + "장까지예요.");
+  const rawElements = Array.isArray(b.elements) ? b.elements : [];
+  const elements: string[] = [];
+  for (const e of rawElements) {
+    const id = String(e ?? "");
+    if (!ELEMENT_ID.test(id)) return fail("bad_element", "요소 번호가 올바르지 않아요.");
+    if (!elements.includes(id)) elements.push(id);
+  }
+  const images = [b.edited, b.original, ...refs] as string[];
+  if (images.length + elements.length > MAX_INPUTS) {
+    return fail("too_many_inputs", "영상 이미지·요소는 합쳐서 " + MAX_INPUTS + "개까지예요 (지금 " + (images.length + elements.length) + "개).");
   }
   const prompt = typeof b.prompt === "string" ? b.prompt.trim() : "";
   if (!prompt) return fail("empty_prompt", "영상화 프롬프트가 비었어요.");
@@ -110,29 +144,32 @@ export function validateStart(body: unknown, uid: string): StartInput | Fail {
     }
     duration = d;
   }
-  return { projectId, inputs, prompt, duration };
+  return { projectId, images, elements, prompt, duration };
 }
 
-// Kling omni-video 작업 생성 본문. type 을 주지 않은 이미지는 레퍼런스로 쓰인다(첫 프레임 고정 아님).
+// Kling omni-video 작업 생성 본문. refer_image 는 레퍼런스(첫 프레임 고정 아님).
 export function createBody(v: StartInput, supabaseUrl: string): Record<string, unknown> {
   return {
-    model_name: MODEL,
-    prompt: v.prompt,
-    image_list: v.inputs.map((p) => ({ image_url: publicUrl(supabaseUrl, p) })),
-    mode: MODE,
-    aspect_ratio: ASPECT,
-    duration: String(v.duration),
-    sound: "off",               // 릴스는 TTS 를 따로 깐다
+    contents: [
+      { type: "prompt", text: v.prompt },
+      ...v.images.map((p, i) => ({ type: "refer_image", url: publicUrl(supabaseUrl, p), id: "image_" + (i + 1) })),
+      ...v.elements.map((e, i) => ({ type: "element", element_id: e, id: "element_" + (i + 1) })),
+    ],
+    settings: {
+      resolution: RESOLUTION,
+      aspect_ratio: ASPECT,
+      duration: v.duration,
+      audio: "off",           // 릴스는 TTS 를 따로 깐다
+      multi_shot: false,      // 사진 한 장 → 한 컷
+    },
   };
 }
 
-export function validateStatus(body: unknown): { projectId: string; taskId: string } | Fail {
+export function validateTask(body: unknown): { projectId: string; taskId: string } | Fail {
   if (!body || typeof body !== "object") return fail("bad_json", "요청을 읽지 못했어요.");
   const b = body as Record<string, unknown>;
-  const projectId = b.projectId;
-  if (typeof projectId !== "string" || !PROJECT_ID.test(projectId)) {
-    return fail("bad_project", "숙소 id 가 올바르지 않아요.");
-  }
+  const projectId = projectOf(b);
+  if (!projectId) return fail("bad_project", "숙소 id 가 올바르지 않아요.");
   const op = b.operation as Record<string, unknown> | null | undefined;
   const taskId = op && typeof op === "object" ? op.taskId : undefined;
   if (typeof taskId !== "string" || !TASK_ID.test(taskId)) {
@@ -147,6 +184,51 @@ export async function videoPath(uid: string, projectId: string, taskId: string):
   const hex = Array.from(new Uint8Array(buf)).map((x) => x.toString(16).padStart(2, "0")).join("");
   return uid + "/" + projectId + "/video/v" + hex.slice(0, 24) + ".mp4";
 }
+
+// ---------- 요소 ----------
+
+const RESERVED = /^(원본|가공|삭제됨|레퍼런스\s*\d+)$/;
+
+// 요소 등록 요청 검사. 정면 1장 + 다른 각도 1~3장, 모두 이 숙소의 element 폴더.
+export function validateElement(body: unknown, uid: string): ElementInput | Fail {
+  if (!body || typeof body !== "object") return fail("bad_json", "요청을 읽지 못했어요.");
+  const b = body as Record<string, unknown>;
+  const projectId = projectOf(b);
+  if (!projectId) return fail("bad_project", "숙소 id 가 올바르지 않아요.");
+  const name = typeof b.name === "string" ? b.name.trim() : "";
+  if (!name) return fail("bad_name", "요소 이름이 비었어요.");
+  if (name.length > ELEMENT_NAME_MAX) return fail("bad_name", "요소 이름은 " + ELEMENT_NAME_MAX + "자까지예요.");
+  if (/[\[\]@]/.test(name) || RESERVED.test(name)) return fail("bad_name", "쓸 수 없는 요소 이름이에요.");
+  const desc = typeof b.desc === "string" ? b.desc.trim() : "";
+  if (!desc) return fail("bad_desc", "요소 설명이 비었어요.");
+  if (desc.length > ELEMENT_DESC_MAX) return fail("bad_desc", "요소 설명은 " + ELEMENT_DESC_MAX + "자까지예요.");
+  const inProject = (p: string) => p.split("/")[1] === projectId;
+  if (!checkPath(b.front, uid, ["element"]) || !inProject(b.front)) return fail("bad_front", "정면 사진 경로가 올바르지 않아요.");
+  const angles = Array.isArray(b.angles) ? b.angles : [];
+  if (angles.length < 1 || angles.length > ELEMENT_ANGLES_MAX) {
+    return fail("bad_angles", "다른 각도 사진은 1~" + ELEMENT_ANGLES_MAX + "장이어야 해요.");
+  }
+  for (const a of angles) {
+    if (!checkPath(a, uid, ["element"]) || !inProject(a) || a === b.front) {
+      return fail("bad_angles", "다른 각도 사진 경로가 올바르지 않아요.");
+    }
+  }
+  return { projectId, name, desc, front: b.front, angles: angles as string[] };
+}
+
+export function elementBody(v: ElementInput, supabaseUrl: string): Record<string, unknown> {
+  return {
+    element_name: v.name,
+    element_description: v.desc,
+    reference_type: "image_refer",
+    element_image_list: {
+      frontal_image: publicUrl(supabaseUrl, v.front),
+      refer_images: v.angles.map((p) => ({ image_url: publicUrl(supabaseUrl, p) })),
+    },
+  };
+}
+
+// ---------- 공통 ----------
 
 function withTimeout(ms: number) {
   const ctl = new AbortController();
@@ -200,7 +282,7 @@ export function klingError(reply: KlingReply): { http: number; body: Fail } {
 
 function klingOk(reply: KlingReply): boolean {
   return reply.http >= 200 && reply.http < 300 && !!reply.json && Number(reply.json.code) === 0 &&
-    !!reply.json.data && typeof reply.json.data === "object";
+    reply.json.data !== undefined && reply.json.data !== null;
 }
 
 // 영상 바이트. 50MB 를 넘으면 끊는다.
@@ -275,6 +357,25 @@ async function whoIs(env: Env, deps: Deps, auth: string): Promise<string | null>
   }
 }
 
+// Kling 호출 + 실패 응답. 성공이면 null 이 아닌 reply 를 돌려준다.
+async function kling(
+  req: Request, env: Env, deps: Deps, label: string, method: string, path: string, body?: unknown,
+): Promise<{ ok: KlingReply } | { res: Response }> {
+  let k: KlingReply;
+  try {
+    k = await callKling(env, deps, method, path, body);
+  } catch (e) {
+    console.error("lodging-reels-clip " + label + " unreachable", { reason: String(e).slice(0, 200) });
+    return { res: reply(req, env, 502, fail("upstream_unreachable", "Kling 에 연결하지 못했어요.")) };
+  }
+  if (!klingOk(k)) {
+    const e = klingError(k);
+    console.error("lodging-reels-clip " + label + " failure", { http: k.http, code: k.json && k.json.code, body: k.text.slice(0, 400) });
+    return { res: reply(req, env, e.http, e.body) };
+  }
+  return { ok: k };
+}
+
 export async function handle(req: Request, env: Env, deps: Deps = {}): Promise<Response> {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(req, env) });
   if (req.method !== "POST") return reply(req, env, 405, fail("method", "POST 만 받아요."));
@@ -290,61 +391,48 @@ export async function handle(req: Request, env: Env, deps: Deps = {}): Promise<R
   try { body = await req.json(); } catch { body = null; }
   const action = body && body.action;
 
+  // ----- 영상 만들기 -----
   if (action === "start") {
     const v = validateStart(body, uid);
     if ("error" in v) return reply(req, env, 400, v);
     const t0 = Date.now();
-    let k: KlingReply;
-    try {
-      k = await callKling(env, deps, "POST", ENDPOINT, createBody(v, env.supabaseUrl || ""));
-    } catch (e) {
-      console.error("lodging-reels-clip start unreachable", { reason: String(e).slice(0, 200) });
-      return reply(req, env, 502, fail("upstream_unreachable", "Kling 에 연결하지 못했어요."));
-    }
-    const data = k.json && k.json.data as Record<string, unknown> | undefined;
-    if (!klingOk(k) || !data || typeof data.task_id !== "string" || !TASK_ID.test(data.task_id)) {
-      const e = klingError(k);
-      console.error("lodging-reels-clip start failure", { http: k.http, code: k.json && k.json.code, body: k.text.slice(0, 400) });
-      return reply(req, env, e.http, e.body);
-    }
+    const k = await kling(req, env, deps, "start", "POST", VIDEO_PATH, createBody(v, env.supabaseUrl || ""));
+    if ("res" in k) return k.res;
+    const data = k.ok.json!.data as Record<string, unknown>;
+    const id = data && data.id !== undefined ? String(data.id) : "";
+    if (!TASK_ID.test(id)) return reply(req, env, 502, fail("no_task", "Kling 이 작업 번호를 주지 않았어요."));
     console.log("lodging-reels-clip started", {
-      model: MODEL, mode: MODE, inputs: v.inputs.length, duration: v.duration, ms: Date.now() - t0,
-      task: data.task_id, request_id: k.json && k.json.request_id,
+      path: VIDEO_PATH, images: v.images.length, elements: v.elements.length, duration: v.duration,
+      ms: Date.now() - t0, task: id, request_id: k.ok.json!.request_id,
     });
     return reply(req, env, 200, {
-      operation: { taskId: data.task_id }, model: MODEL, mode: MODE, aspect: ASPECT,
-      duration: v.duration, inputs: v.inputs.length,
+      operation: { taskId: id }, resolution: RESOLUTION, aspect: ASPECT,
+      duration: v.duration, images: v.images.length, elements: v.elements.length,
     });
   }
 
+  // ----- 영상 확인 -----
   if (action === "status") {
-    const v = validateStatus(body);
+    const v = validateTask(body);
     if ("error" in v) return reply(req, env, 400, v);
-    let k: KlingReply;
-    try {
-      k = await callKling(env, deps, "GET", ENDPOINT + "/" + encodeURIComponent(v.taskId));
-    } catch (e) {
-      console.error("lodging-reels-clip status unreachable", { reason: String(e).slice(0, 200) });
-      return reply(req, env, 502, fail("upstream_unreachable", "Kling 에 연결하지 못했어요."));
-    }
-    if (!klingOk(k)) {
-      const e = klingError(k);
-      console.error("lodging-reels-clip status failure", { http: k.http, code: k.json && k.json.code, body: k.text.slice(0, 400) });
-      return reply(req, env, e.http, e.body);
-    }
-    const data = (k.json as Record<string, unknown>).data as Record<string, unknown>;
-    const st = String(data.task_status || "");
+    const k = await kling(req, env, deps, "status", "GET", TASKS_PATH + "?task_ids=" + encodeURIComponent(v.taskId));
+    if ("res" in k) return k.res;
+    const list = k.ok.json!.data;
+    const tasks = Array.isArray(list) ? list as Record<string, unknown>[] : [];
+    const task = tasks.find((t) => t && String(t.id) === v.taskId) || tasks[0];
+    if (!task) return reply(req, env, 502, fail("no_task", "Kling 에서 작업을 찾지 못했어요."));
+    const st = String(task.status || "");
     if (st === "submitted" || st === "processing") return reply(req, env, 200, { status: "pending", kling: st });
     if (st === "failed") {
-      const msg = String(data.task_status_msg || "영상 생성에 실패했어요.").slice(0, 400);
+      const msg = String(task.message || "영상 생성에 실패했어요.").slice(0, 400);
       console.error("lodging-reels-clip task failed", { task: v.taskId, msg });
       return reply(req, env, 200, { status: "error", message: msg });
     }
-    if (st !== "succeed") return reply(req, env, 502, fail("bad_status", "알 수 없는 작업 상태예요: " + st.slice(0, 40)));
+    if (st !== "succeeded") return reply(req, env, 502, fail("bad_status", "알 수 없는 작업 상태예요: " + st.slice(0, 40)));
 
-    const result = data.task_result as Record<string, unknown> | undefined;
-    const videos = result && Array.isArray(result.videos) ? result.videos as Record<string, unknown>[] : [];
-    const first = videos.find((x) => x && typeof x.url === "string");
+    const outputs = Array.isArray(task.outputs) ? task.outputs as Record<string, unknown>[] : [];
+    const first = outputs.find((x) => x && x.type === "video" && typeof x.url === "string") ||
+      outputs.find((x) => x && typeof x.url === "string");
     if (!first) return reply(req, env, 502, fail("no_video", "완료됐다는데 영상 주소가 없어요."));
 
     const t0 = Date.now();
@@ -374,5 +462,51 @@ export async function handle(req: Request, env: Env, deps: Deps = {}): Promise<R
     });
   }
 
-  return reply(req, env, 400, fail("bad_action", "action 은 start 또는 status 여야 해요."));
+  // ----- 요소 등록 -----
+  if (action === "element_create") {
+    const v = validateElement(body, uid);
+    if ("error" in v) return reply(req, env, 400, v);
+    const k = await kling(req, env, deps, "element_create", "POST", ELEMENTS_PATH, elementBody(v, env.supabaseUrl || ""));
+    if ("res" in k) return k.res;
+    const data = k.ok.json!.data as Record<string, unknown>;
+    const id = data && data.task_id !== undefined ? String(data.task_id) : "";
+    if (!TASK_ID.test(id)) return reply(req, env, 502, fail("no_task", "Kling 이 등록 작업 번호를 주지 않았어요."));
+    console.log("lodging-reels-clip element started", { task: id, angles: v.angles.length });
+    return reply(req, env, 200, { operation: { taskId: id } });
+  }
+
+  // ----- 요소 등록 확인 -----
+  if (action === "element_status") {
+    const v = validateTask(body);
+    if ("error" in v) return reply(req, env, 400, v);
+    const k = await kling(req, env, deps, "element_status", "GET", ELEMENTS_PATH + "/" + encodeURIComponent(v.taskId));
+    if ("res" in k) return k.res;
+    const data = k.ok.json!.data as Record<string, unknown>;
+    const st = String((data && data.task_status) || "");
+    if (st === "submitted" || st === "processing") return reply(req, env, 200, { status: "pending", kling: st });
+    if (st === "failed") {
+      const msg = String(data.task_status_msg || "요소 등록에 실패했어요.").slice(0, 400);
+      console.error("lodging-reels-clip element failed", { task: v.taskId, msg });
+      return reply(req, env, 200, { status: "error", message: msg });
+    }
+    if (st !== "succeed") return reply(req, env, 502, fail("bad_status", "알 수 없는 등록 상태예요: " + st.slice(0, 40)));
+    const result = data.task_result as Record<string, unknown> | undefined;
+    const els = result && Array.isArray(result.elements) ? result.elements as Record<string, unknown>[] : [];
+    const el = els.find((x) => x && x.element_id !== undefined && x.element_id !== null);
+    const elementId = el ? String(el.element_id) : "";
+    if (!ELEMENT_ID.test(elementId)) return reply(req, env, 502, fail("no_element", "등록은 끝났는데 요소 번호가 없어요."));
+    console.log("lodging-reels-clip element ready", { task: v.taskId, element: elementId });
+    return reply(req, env, 200, { status: "ready", elementId });
+  }
+
+  // ----- 요소 지우기 (Kling 쪽, 실패해도 화면 쪽 삭제는 그대로) -----
+  if (action === "element_delete") {
+    const id = String((body && body.elementId) ?? "");
+    if (!ELEMENT_ID.test(id)) return reply(req, env, 400, fail("bad_element", "요소 번호가 올바르지 않아요."));
+    const k = await kling(req, env, deps, "element_delete", "POST", ELEMENT_DELETE_PATH, { element_id: id });
+    if ("res" in k) return k.res;
+    return reply(req, env, 200, { ok: true });
+  }
+
+  return reply(req, env, 400, fail("bad_action", "action 은 start · status · element_create · element_status · element_delete 중 하나여야 해요."));
 }

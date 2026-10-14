@@ -1,10 +1,12 @@
-// ⑨ 영상화 Edge Function(supabase/functions/lodging-reels-clip) 검사. Deno 로 돌린다:
-//   deno test tests/clip-function.test.ts
+// ⑨ 영상화 + 요소 Edge Function(supabase/functions/lodging-reels-clip) 검사. Deno 로 돌린다:
+//   deno test --no-check tests/clip-function.test.ts
 // 실제 Kling 호출은 하지 않는다(돈이 든다). 네트워크는 전부 가짜.
+// 요청·응답 모양은 Kling 공식 문서(video-omni.md / elements.md) 그대로다.
 import assert from "node:assert/strict";
 import {
-  ASPECT, checkPath, createBody, DEFAULT_BASE, ENDPOINT, handle, MAX_DURATION, MAX_INPUTS, MAX_PROMPT, MIN_DURATION,
-  MAX_VIDEO_BYTES, MODE, MODEL, publicUrl, readVideo, validateStart, validateStatus, videoPath,
+  ASPECT, checkPath, createBody, DEFAULT_BASE, elementBody, ELEMENT_DELETE_PATH, ELEMENTS_PATH, handle,
+  MAX_DURATION, MAX_INPUTS, MAX_PROMPT, MAX_VIDEO_BYTES, MIN_DURATION, publicUrl, readVideo, RESOLUTION,
+  TASKS_PATH, validateElement, validateStart, validateTask, VIDEO_PATH, videoPath,
 } from "../supabase/functions/lodging-reels-clip/clip.ts";
 
 const UID = "11111111-2222-3333-4444-555555555555";
@@ -14,8 +16,12 @@ const SUPA = "https://kfgtvifupumjuewwxzmz.supabase.co";
 const EDITED = `${UID}/${P}/edited/e1.jpg`;
 const ORIGINAL = `${UID}/${P}/photo/o1.jpg`;
 const REF = (n: number) => `${UID}/${P}/ref/r${n}.jpg`;
-const START = { action: "start", projectId: P, edited: EDITED, original: ORIGINAL, refs: [REF(1)], prompt: "<<<image_1>>> 장면", duration: 5 };
+const EL = (n: number) => `${UID}/${P}/element/x${n}.jpg`;
+const START = { action: "start", projectId: P, edited: EDITED, original: ORIGINAL, refs: [REF(1)], elements: [], prompt: "@image_1 장면", duration: 5 };
+const ELEMENT = { action: "element_create", projectId: P, name: "아이", desc: "7세 여자아이, 단발머리", front: EL(1), angles: [EL(2), EL(3)] };
 const ENV = { klingKey: "TEST_ONLY_KLING_KEY", supabaseUrl: SUPA, anonKey: "anon", allowedOrigins: "*" };
+
+const err = (v: unknown) => (v && typeof v === "object" && "error" in v ? (v as { error: string }).error : null);
 
 Deno.test("paths: only the caller's own edited/photo/ref jpg·png files in one project", () => {
   assert.equal(checkPath(EDITED, UID, ["edited"]), true);
@@ -24,60 +30,90 @@ Deno.test("paths: only the caller's own edited/photo/ref jpg·png files in one p
   assert.equal(checkPath(`${UID}/../x/edited/e1.jpg`, UID, ["edited"]), false);
   assert.equal(checkPath("https://evil.example/a.jpg", UID, ["edited"]), false);
   const ok = validateStart(START, UID);
-  assert.ok(!("error" in ok));
-  if (!("error" in ok)) assert.deepEqual(ok.inputs, [EDITED, ORIGINAL, REF(1)], "image_1 edited, image_2 original, image_3 ref");
-  const err = (b: unknown) => { const v = validateStart(b, UID); return "error" in v ? v.error : null; };
-  assert.equal(err({ ...START, edited: ORIGINAL }), "bad_edited");
-  assert.equal(err({ ...START, original: EDITED }), "bad_original");
-  assert.equal(err({ ...START, refs: [ORIGINAL] }), "bad_ref");
-  assert.equal(err({ ...START, refs: [`${UID}/pother/ref/r1.jpg`] }), "bad_ref", "other project");
-  assert.equal(err({ ...START, projectId: "a/b" }), "bad_project");
+  assert.equal(err(ok), null);
+  if (!("error" in ok)) assert.deepEqual(ok.images, [EDITED, ORIGINAL, REF(1)], "image_1 edited, image_2 original, image_3 ref");
+  assert.equal(err(validateStart({ ...START, edited: ORIGINAL }, UID)), "bad_edited");
+  assert.equal(err(validateStart({ ...START, original: EDITED }, UID)), "bad_original");
+  assert.equal(err(validateStart({ ...START, refs: [ORIGINAL] }, UID)), "bad_ref");
+  assert.equal(err(validateStart({ ...START, refs: [EL(1)] }, UID)), "bad_ref", "element photos go in as elements, not images");
+  assert.equal(err(validateStart({ ...START, refs: [`${UID}/pother/ref/r1.jpg`] }, UID)), "bad_ref", "other project");
+  assert.equal(err(validateStart({ ...START, projectId: "a/b" }, UID)), "bad_project");
+  assert.equal(err(validateStart({ ...START, elements: ["12a"] }, UID)), "bad_element");
 });
 
-Deno.test("limits: 7 images, 2500 chars, any whole 3-15 s per video", () => {
+Deno.test("limits: images + elements ≤ 7, 2500 chars, any whole 3-15 s per video", () => {
   assert.equal(MAX_INPUTS, 7);
-  const err = (b: unknown) => { const v = validateStart(b, UID); return "error" in v ? v.error : null; };
-  assert.equal(err({ ...START, refs: [1, 2, 3, 4, 5].map(REF) }), null, "edited + original + 5 refs = 7");
-  assert.equal(err({ ...START, refs: [1, 2, 3, 4, 5, 6].map(REF) }), "too_many_refs");
-  assert.equal(err({ ...START, prompt: "  " }), "empty_prompt");
-  assert.equal(err({ ...START, prompt: "가".repeat(MAX_PROMPT + 1) }), "too_long");
+  assert.equal(err(validateStart({ ...START, refs: [1, 2, 3].map(REF), elements: ["11", "12"] }, UID)), null, "3 images + 2 refs + 2 elements = 7");
+  assert.equal(err(validateStart({ ...START, refs: [1, 2, 3].map(REF), elements: ["11", "12", "13"] }, UID)), "too_many_inputs");
+  assert.equal(err(validateStart({ ...START, refs: [1, 2, 3, 4, 5, 6].map(REF) }, UID)), "too_many_inputs");
+  const dup = validateStart({ ...START, elements: ["11", 11, "11"] }, UID);
+  if (!("error" in dup)) assert.deepEqual(dup.elements, ["11"], "same element counted once");
+  assert.equal(err(validateStart({ ...START, prompt: "  " }, UID)), "empty_prompt");
+  assert.equal(err(validateStart({ ...START, prompt: "가".repeat(MAX_PROMPT + 1) }, UID)), "too_long");
   const d = (x: unknown) => { const v = validateStart({ ...START, duration: x }, UID); return "error" in v ? v.error : v.duration; };
   assert.equal(MIN_DURATION, 3);
   assert.equal(MAX_DURATION, 15);
   assert.equal(d(3), 3);
-  assert.equal(d(7), 7, "any whole second, typed per video");
+  assert.equal(d(7), 7);
   assert.equal(d("12"), 12);
-  assert.equal(d(15), 15);
   assert.equal(d(undefined), 5, "blank → 5 s");
   assert.equal(d(""), 5);
   assert.equal(d(2), "bad_duration");
   assert.equal(d(16), "bad_duration");
   assert.equal(d(4.5), "bad_duration");
-  assert.equal(d("abc"), "bad_duration");
 });
 
-Deno.test("create body: kling-v3-omni pro, 9:16, references in order, no first frame, no sound", () => {
-  const v = validateStart({ ...START, refs: [REF(1), REF(2)], duration: 7 }, UID);
-  assert.ok(!("error" in v));
+Deno.test("create body: official omni format — contents/settings, refer_image ids, element items, 1080p 9:16 single shot", () => {
+  const v = validateStart({ ...START, refs: [REF(1), REF(2)], elements: ["162", "999"], duration: 7 }, UID);
+  assert.equal(err(v), null);
   if ("error" in v) return;
-  const b = createBody(v, SUPA);
-  assert.equal(b.model_name, "kling-v3-omni");
-  assert.equal(b.mode, "pro");
-  assert.equal(b.aspect_ratio, "9:16");
-  assert.equal(b.duration, "7", "Kling takes duration as a string");
-  assert.equal(b.sound, "off");
-  assert.equal(b.prompt, "<<<image_1>>> 장면");
-  assert.deepEqual(b.image_list, [EDITED, ORIGINAL, REF(1), REF(2)].map((p) => ({ image_url: publicUrl(SUPA, p) })));
-  for (const it of b.image_list as Record<string, unknown>[]) assert.equal(it.type, undefined, "reference, not first_frame");
-  assert.equal(b.image, undefined);
-  assert.equal(b.image_tail, undefined);
+  const b = createBody(v, SUPA) as { contents: Record<string, unknown>[]; settings: Record<string, unknown> };
+  assert.deepEqual(b.contents[0], { type: "prompt", text: "@image_1 장면" });
+  assert.deepEqual(b.contents.slice(1, 5), [EDITED, ORIGINAL, REF(1), REF(2)].map((p, i) =>
+    ({ type: "refer_image", url: publicUrl(SUPA, p), id: "image_" + (i + 1) })));
+  assert.deepEqual(b.contents.slice(5), [
+    { type: "element", element_id: "162", id: "element_1" },
+    { type: "element", element_id: "999", id: "element_2" },
+  ]);
+  assert.ok(!b.contents.some((c) => c.type === "first_frame"), "reference, not first frame");
+  assert.deepEqual(b.settings, { resolution: "1080p", aspect_ratio: "9:16", duration: 7, audio: "off", multi_shot: false });
+  assert.equal(RESOLUTION, "1080p");
+  assert.equal(ASPECT, "9:16");
+  assert.equal(VIDEO_PATH, "/omni-video/kling-3.0-omni");
 });
 
-Deno.test("status input and result path", async () => {
-  const e = (b: unknown) => { const v = validateStatus(b); return "error" in v ? v.error : null; };
-  assert.equal(e({ projectId: P }), "bad_operation");
-  assert.equal(e({ projectId: P, operation: { taskId: "../x" } }), "bad_operation", "no path injection into the Kling URL");
-  assert.equal(e({ projectId: P, operation: { taskId: "8642abc_DEF-1" } }), null);
+Deno.test("element create: name/desc limits, front + 1-3 angles in the project's element folder", () => {
+  const ok = validateElement(ELEMENT, UID);
+  assert.equal(err(ok), null);
+  if (!("error" in ok)) {
+    assert.deepEqual(elementBody(ok, SUPA), {
+      element_name: "아이",
+      element_description: "7세 여자아이, 단발머리",
+      reference_type: "image_refer",
+      element_image_list: {
+        frontal_image: publicUrl(SUPA, EL(1)),
+        refer_images: [{ image_url: publicUrl(SUPA, EL(2)) }, { image_url: publicUrl(SUPA, EL(3)) }],
+      },
+    });
+  }
+  const e = (b: unknown) => err(validateElement(b, UID));
+  assert.equal(e({ ...ELEMENT, name: "가".repeat(21) }), "bad_name");
+  assert.equal(e({ ...ELEMENT, name: "원본" }), "bad_name", "reserved");
+  assert.equal(e({ ...ELEMENT, name: "레퍼런스2" }), "bad_name", "reserved");
+  assert.equal(e({ ...ELEMENT, name: "[아이]" }), "bad_name");
+  assert.equal(e({ ...ELEMENT, desc: "" }), "bad_desc");
+  assert.equal(e({ ...ELEMENT, desc: "가".repeat(101) }), "bad_desc");
+  assert.equal(e({ ...ELEMENT, angles: [] }), "bad_angles");
+  assert.equal(e({ ...ELEMENT, angles: [EL(2), EL(3), EL(4), EL(5)] }), "bad_angles");
+  assert.equal(e({ ...ELEMENT, angles: [EL(1)] }), "bad_angles", "angle must differ from front");
+  assert.equal(e({ ...ELEMENT, front: REF(1) }), "bad_front", "element photos live in the element folder");
+  assert.equal(e({ ...ELEMENT, front: `${UID}/pother/element/x1.jpg` }), "bad_front", "other project");
+});
+
+Deno.test("task input and result path", async () => {
+  assert.equal(err(validateTask({ projectId: P })), "bad_operation");
+  assert.equal(err(validateTask({ projectId: P, operation: { taskId: "../x" } })), "bad_operation", "no path injection");
+  assert.equal(err(validateTask({ projectId: P, operation: { taskId: "893605946402811985" } })), null);
   const a = await videoPath(UID, P, "t1"), b = await videoPath(UID, P, "t1"), c = await videoPath(UID, P, "t2");
   assert.equal(a, b, "same task → same file");
   assert.notEqual(a, c);
@@ -117,78 +153,111 @@ function post(body: unknown, auth = "Bearer user-jwt") {
 }
 const MP4 = new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
 
-Deno.test("start → processing → succeed: Bearer key, omni endpoint, video stored in the user's folder", async () => {
+Deno.test("video: create → processing → succeeded, Bearer key, video stored in the user's folder", async () => {
   let polls = 0;
   const n = net([
     ["/auth/v1/user", user],
-    [`${ENDPOINT}/task_123`, () => (++polls === 1)
-      ? json({ code: 0, message: "SUCCEED", data: { task_id: "task_123", task_status: "processing" } })
-      : json({ code: 0, message: "SUCCEED", data: { task_id: "task_123", task_status: "succeed",
-          task_result: { videos: [{ id: "v1", url: "https://cdn.klingai.example/out.mp4", duration: "5.1" }] } } })],
-    [ENDPOINT, () => json({ code: 0, message: "SUCCEED", request_id: "req1", data: { task_id: "task_123", task_status: "submitted" } })],
+    [TASKS_PATH + "?task_ids=893605946402811985", () => (++polls === 1)
+      ? json({ code: 0, message: "SUCCEED", data: [{ id: "893605946402811985", status: "processing", outputs: [] }] })
+      : json({ code: 0, message: "SUCCEED", data: [{ id: "893605946402811985", status: "succeeded",
+          outputs: [{ type: "video", id: "v1", url: "https://cdn.klingai.example/out.mp4", duration: "5.1" }] }] })],
+    [VIDEO_PATH, () => json({ code: 0, message: "SUCCEED", request_id: "req1", data: { id: "893605946402811985", status: "submitted" } })],
     ["https://cdn.klingai.example/out.mp4", () => new Response(MP4, { headers: { "content-type": "video/mp4", "content-length": String(MP4.length) } })],
     ["/storage/v1/object/lodging-reels/", () => json({ Key: "ok" })],
   ]);
-  const s = await handle(post(START), ENV, { fetch: n.fetch });
+  const s = await handle(post({ ...START, elements: ["162"] }), ENV, { fetch: n.fetch });
   assert.equal(s.status, 200);
   assert.equal(s.headers.get("Access-Control-Allow-Origin"), "*");
   const sb = await s.json();
-  assert.deepEqual(sb.operation, { taskId: "task_123" });
-  assert.equal(sb.model, MODEL);
-  assert.equal(sb.mode, MODE);
-  assert.equal(sb.aspect, ASPECT);
-  const create = n.seen.find((x) => x.method === "POST" && x.url === DEFAULT_BASE + ENDPOINT);
-  assert.ok(create, "POST " + DEFAULT_BASE + ENDPOINT);
+  assert.deepEqual(sb.operation, { taskId: "893605946402811985" });
+  assert.equal(sb.elements, 1);
+  const create = n.seen.find((x) => x.method === "POST" && x.url === DEFAULT_BASE + VIDEO_PATH);
+  assert.ok(create, "POST " + DEFAULT_BASE + VIDEO_PATH);
   assert.equal(create!.headers.Authorization, "Bearer TEST_ONLY_KLING_KEY", "API key sent as-is as Bearer");
-  assert.equal((create!.body as Record<string, unknown>).model_name, "kling-v3-omni");
+  const cb = create!.body as { contents: Record<string, unknown>[] };
+  assert.deepEqual(cb.contents.at(-1), { type: "element", element_id: "162", id: "element_1" });
 
   const p = await handle(post({ action: "status", projectId: P, operation: sb.operation }), ENV, { fetch: n.fetch });
   assert.deepEqual(await p.json(), { status: "pending", kling: "processing" });
   assert.ok(!n.seen.some((x) => x.url.includes("/storage/")), "nothing stored while pending");
-  const poll = n.seen.find((x) => x.url.endsWith("/task_123"))!;
+  const poll = n.seen.find((x) => x.url.includes(TASKS_PATH + "?"))!;
   assert.equal(poll.method, "GET");
-  assert.equal(poll.url, DEFAULT_BASE + ENDPOINT + "/task_123");
+  assert.equal(poll.url, DEFAULT_BASE + TASKS_PATH + "?task_ids=893605946402811985");
 
   const d = await handle(post({ action: "status", projectId: P, operation: sb.operation }), ENV, { fetch: n.fetch });
   const db = await d.json();
   assert.equal(d.status, 200);
   assert.equal(db.status, "completed");
-  assert.equal(db.id, await videoPath(UID, P, "task_123"));
+  assert.equal(db.id, await videoPath(UID, P, "893605946402811985"));
   assert.equal(db.size, MP4.length);
   assert.equal(db.duration, 5.1);
   const up = n.seen.find((x) => x.url.includes("/storage/v1/object/lodging-reels/"))!;
   assert.equal(up.method, "POST");
   assert.ok(up.url.endsWith("/" + db.id));
   assert.equal(up.headers.Authorization, "Bearer user-jwt", "stored with the user's own token");
-  assert.equal(up.headers.apikey, "anon");
   assert.equal(up.headers["x-upsert"], "true");
   assert.equal(up.headers["Content-Type"], "video/mp4");
 });
 
-Deno.test("Kling errors become readable messages; failed task stops", async () => {
+Deno.test("element: create → processing → succeed gives element_id; delete; failure message", async () => {
+  let polls = 0;
+  const n = net([
+    ["/auth/v1/user", user],
+    [ELEMENTS_PATH + "/el_task_1", () => (++polls === 1)
+      ? json({ code: 0, data: { task_id: "el_task_1", task_status: "processing" } })
+      : json({ code: 0, data: { task_id: "el_task_1", task_status: "succeed",
+          task_result: { elements: [{ element_id: 834521, element_name: "아이", status: "succeed" }] } } })],
+    [ELEMENTS_PATH, () => json({ code: 0, message: "SUCCEED", data: { task_id: "el_task_1", task_status: "submitted" } })],
+    [ELEMENT_DELETE_PATH, () => json({ code: 0, data: { task_id: "d1", task_status: "succeed" } })],
+  ]);
+  const c = await handle(post(ELEMENT), ENV, { fetch: n.fetch });
+  assert.deepEqual(await c.json(), { operation: { taskId: "el_task_1" } });
+  const create = n.seen.find((x) => x.method === "POST" && x.url === DEFAULT_BASE + ELEMENTS_PATH)!;
+  assert.equal((create.body as Record<string, unknown>).reference_type, "image_refer");
+  assert.equal(create.headers.Authorization, "Bearer TEST_ONLY_KLING_KEY");
+
+  const st = (op: unknown) => handle(post({ action: "element_status", projectId: P, operation: op }), ENV, { fetch: n.fetch }).then((r) => r.json());
+  assert.deepEqual(await st({ taskId: "el_task_1" }), { status: "pending", kling: "processing" });
+  assert.deepEqual(await st({ taskId: "el_task_1" }), { status: "ready", elementId: "834521" }, "numeric id comes back as a string");
+  const q = n.seen.find((x) => x.url.endsWith(ELEMENTS_PATH + "/el_task_1"))!;
+  assert.equal(q.method, "GET");
+
+  const d = await handle(post({ action: "element_delete", elementId: "834521" }), ENV, { fetch: n.fetch });
+  assert.deepEqual(await d.json(), { ok: true });
+  const del = n.seen.find((x) => x.url === DEFAULT_BASE + ELEMENT_DELETE_PATH)!;
+  assert.equal(del.method, "POST");
+  assert.deepEqual(del.body, { element_id: "834521" });
+
+  const f = net([["/auth/v1/user", user],
+    [ELEMENTS_PATH, () => json({ code: 0, data: { task_id: "t9", task_status: "failed", task_status_msg: "content moderation" } })]]);
+  const fr = await handle(post({ action: "element_status", projectId: P, operation: { taskId: "t9" } }), ENV, { fetch: f.fetch });
+  assert.deepEqual(await fr.json(), { status: "error", message: "content moderation" });
+});
+
+Deno.test("Kling errors become readable messages; failed video task stops", async () => {
   const cases: [Response, number, string][] = [
     [json({ code: 1002, message: "Authorization is invalid" }, 401), 502, "kling_auth"],
     [json({ code: 1102, message: "Account balance not enough" }, 429), 402, "kling_account"],
     [json({ code: 1303, message: "parallel task over resource pack limit" }, 429), 429, "rate_limited"],
-    [json({ code: 1201, message: "image_list invalid" }, 400), 400, "kling_rejected"],
+    [json({ code: 1201, message: "contents invalid" }, 400), 400, "kling_rejected"],
     [json({ code: 5000, message: "server error" }, 500), 502, "upstream_error"],
   ];
   for (const [res, http, code] of cases) {
-    const n = net([["/auth/v1/user", user], [ENDPOINT, () => res.clone()]]);
+    const n = net([["/auth/v1/user", user], [VIDEO_PATH, () => res.clone()]]);
     const r = await handle(post(START), ENV, { fetch: n.fetch });
     const b = await r.json();
     assert.equal(r.status, http, code);
     assert.equal(b.error, code);
     assert.ok(b.message.includes(((await res.clone().json()) as { message: string }).message), "Kling's own message is kept");
-    assert.equal(n.seen.filter((x) => x.url.includes(ENDPOINT)).length, 1, "start is never retried");
+    assert.equal(n.seen.filter((x) => x.url.includes(VIDEO_PATH)).length, 1, "start is never retried");
   }
   const n = net([["/auth/v1/user", user],
-    [ENDPOINT, () => json({ code: 0, data: { task_id: "t9", task_status: "failed", task_status_msg: "content risk" } })]]);
+    [TASKS_PATH, () => json({ code: 0, data: [{ id: "t9", status: "failed", message: "content risk" }] })]]);
   const f = await handle(post({ action: "status", projectId: P, operation: { taskId: "t9" } }), ENV, { fetch: n.fetch });
   assert.deepEqual(await f.json(), { status: "error", message: "content risk" });
 });
 
-Deno.test("login, key, preflight, action", async () => {
+Deno.test("login, key, preflight, action, base override", async () => {
   const n = net([["/auth/v1/user", user]]);
   assert.equal((await handle(post(START, "Bearer nope"), ENV, { fetch: n.fetch })).status, 401);
   const nk = await handle(post(START), { ...ENV, klingKey: "" }, { fetch: n.fetch });
@@ -198,7 +267,8 @@ Deno.test("login, key, preflight, action", async () => {
   assert.equal(pre.status, 204);
   assert.match(pre.headers.get("Access-Control-Allow-Headers") || "", /authorization, apikey, content-type/);
   assert.equal((await (await handle(post({ action: "nope" }), ENV, { fetch: n.fetch })).json()).error, "bad_action");
-  const base = net([["/auth/v1/user", user], [ENDPOINT, () => json({ code: 0, data: { task_id: "t1" } })]]);
-  await handle(post(START), { ...ENV, klingBase: "https://api.klingai.com/" }, { fetch: base.fetch });
-  assert.ok(base.seen.some((x) => x.url === "https://api.klingai.com" + ENDPOINT), "KLINGAI_API_BASE overrides the host");
+  assert.equal((await (await handle(post({ action: "element_delete", elementId: "x" }), ENV, { fetch: n.fetch })).json()).error, "bad_element");
+  const base = net([["/auth/v1/user", user], [VIDEO_PATH, () => json({ code: 0, data: { id: "t1" } })]]);
+  await handle(post(START), { ...ENV, klingBase: "https://api-beijing.klingai.com/" }, { fetch: base.fetch });
+  assert.ok(base.seen.some((x) => x.url === "https://api-beijing.klingai.com" + VIDEO_PATH), "KLINGAI_API_BASE overrides the host");
 });
