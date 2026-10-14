@@ -35,7 +35,12 @@ Deno.test("paths: only the caller's own edited/photo/ref jpg·png files in one p
   assert.equal(err(validateStart({ ...START, edited: ORIGINAL }, UID)), "bad_edited");
   assert.equal(err(validateStart({ ...START, original: EDITED }, UID)), "bad_original");
   assert.equal(err(validateStart({ ...START, refs: [ORIGINAL] }, UID)), "bad_ref");
-  assert.equal(err(validateStart({ ...START, refs: [EL(1)] }, UID)), "bad_ref", "element photos go in as elements, not images");
+  assert.equal(err(validateStart({ ...START, refs: [EL(1)] }, UID)), null,
+    "unregistered/local element photos may be sent directly as image references");
+  assert.equal(err(validateStart({ ...START, refs: [`${UID}/other_project/element/x1.jpg`] }, UID)), "bad_ref",
+    "local element photo must belong to this project");
+  assert.equal(err(validateStart({ ...START, refs: [`other_user/${P}/element/x1.jpg`] }, UID)), "bad_ref",
+    "local element photo must belong to this user");
   assert.equal(err(validateStart({ ...START, refs: [`${UID}/pother/ref/r1.jpg`] }, UID)), "bad_ref", "other project");
   assert.equal(err(validateStart({ ...START, projectId: "a/b" }, UID)), "bad_project");
   assert.equal(err(validateStart({ ...START, elements: ["12a"] }, UID)), "bad_element");
@@ -101,7 +106,12 @@ Deno.test("element create: name/desc limits, front + 1-3 angles in the project's
   assert.equal(e({ ...ELEMENT, name: "원본" }), "bad_name", "reserved");
   assert.equal(e({ ...ELEMENT, name: "레퍼런스2" }), "bad_name", "reserved");
   assert.equal(e({ ...ELEMENT, name: "[아이]" }), "bad_name");
-  assert.equal(e({ ...ELEMENT, desc: "" }), "bad_desc");
+  const noDesc = validateElement({ ...ELEMENT, desc: "" }, UID);
+  assert.equal(err(noDesc), null, "description may be left blank in the app");
+  if (!("error" in noDesc)) {
+    assert.equal(noDesc.desc, "아이", "required Kling API description defaults to the element name");
+    assert.equal(elementBody(noDesc, SUPA).element_description, "아이");
+  }
   assert.equal(e({ ...ELEMENT, desc: "가".repeat(101) }), "bad_desc");
   assert.equal(e({ ...ELEMENT, angles: [] }), "bad_angles");
   assert.equal(e({ ...ELEMENT, angles: [EL(2), EL(3), EL(4), EL(5)] }), "bad_angles");

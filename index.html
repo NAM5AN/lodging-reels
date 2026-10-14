@@ -3123,8 +3123,9 @@
       " Preserve Image 1's original width-to-height aspect ratio without stretching or padding.";
   }
   // ---------- ⑨ 요소 (Kling Element) ----------
-  // 숙소마다 따로 등록하는 사람·물건. 정면 1장 + 다른 각도 1~3장 + 이름·설명.
-  // 프롬프트에 [이름] 으로 부르면 사진 가공에는 그 사진들을 레퍼런스로, 영상화에는 Kling 요소 번호로 넣는다.
+  // 요소는 이름 + 기준 사진 한 장만 있으면 사진 가공/영상화에서 바로 사용 가능.
+  // 다른 각도·설명은 선택사항. Kling 서버 고정 요소는 공식 API 규격상 추가 각도 1장 이상 필요.
+  // [이름] 호출 시 준비된 Kling 요소면 element_id, 아니면 기준 사진을 @image_N 레퍼런스로 전달한다.
   //   current.elements = [{ key, name, desc, front:{id,w,h,size}, angles:[{id,w,h,size}],
   //                         kling:{ status:"pending"|"ready"|"failed", taskId, elementId, sig, at, msg } }]
   var ELEM = { nameMax:20, descMax:100, maxAngles:3, minSide:300, maxRatio:2.5, giveUpMs:30*60*1000 };
@@ -3150,10 +3151,12 @@
     if(hit) return hit.name===name ? "같은 이름의 요소가 있어요." : "「"+hit.name+"」 — 이름이 서로 겹쳐요. 포함되지 않게 지어주세요.";
     return "";
   }
-  // draft(이름·설명·사진 부족) / new(등록 전) / pending / ready / failed / stale(등록 뒤 사진이 바뀜)
+  // draft(이름/사진 없음) / local(사진 1장, 즉시 사용) / new(고정 요소 등록 가능)
+  // pending/ready/failed/stale은 Kling 고정 요소 상태. 어느 상태든 사진 참조 사용 가능.
   function elemState(proj, el){
-    if(!el || !el.name || elemNameProblem(proj, el.name, el.key) || !String(el.desc||"").trim() ||
-       !(el.front && el.front.id) || !(el.angles||[]).length) return "draft";
+    if(!el || !el.name || elemNameProblem(proj, el.name, el.key) ||
+       !(el.front && el.front.id)) return "draft";
+    if(!(el.angles||[]).length) return "local";
     var k=el.kling;
     if(!k || !k.status) return "new";
     if(k.status==="pending") return "pending";
@@ -3295,31 +3298,48 @@
   function clipPlan(proj, pid){
     var e=(proj.edits||{})[pid], sp=peekSpec(proj, pid), named={};
     mentionsOf(proj, pid, sp.vprompt, "clip").forEach(function(t){ if(t.kind==="ref") named[t.n]=1; });
-    var els=mentionedElements(proj, pid, sp.vprompt, "clip");
+    var mentioned=mentionedElements(proj, pid, sp.vprompt, "clip");
+    // Kling 고정 요소가 ready면 element_id를, 나머지는 기준 사진 한 장을 사용한다.
+    var els=mentioned.filter(function(el){ return elemState(proj,el)==="ready"; });
+    var local=mentioned.filter(function(el){ return elemState(proj,el)!=="ready" && elemPhotos(el).length; });
+    var missing=mentioned.filter(function(el){ return !elemPhotos(el).length; });
     var refs=sp.refs.map(function(r, j){ return {n:j+1, id:r.id, w:r.w, h:r.h}; }), dropped=[];
-    var room=CLIP.maxInputs-2-els.length;
+    var room=CLIP.maxInputs-2-els.length-local.length;
     for(var j=refs.length-1; j>=0 && refs.length>room; j--){
       if(!named[refs[j].n]){ dropped.unshift(refs[j].n); refs.splice(j, 1); }
     }
     var refImage={};
     refs.forEach(function(x, k){ refImage[x.n]=k+3; });
-    var total=2+refs.length+els.length;
+    var localRefs=local.map(function(el,k){
+      return {el:el, photo:elemPhotos(el)[0], imageIndex:3+refs.length+k};
+    });
+    var total=2+refs.length+els.length+localRefs.length;
     return {
-      images: e && e.id ? [e.id, pid].concat(refs.map(function(x){ return x.id; })) : [],
-      refs:refs, refImage:refImage, elements:els, dropped:dropped, total:total, over:total>CLIP.maxInputs
+      images:e && e.id ? [e.id, pid].concat(refs.map(function(x){ return x.id; }),
+        localRefs.map(function(x){ return x.photo.id; })) : [],
+      refs:refs, refImage:refImage, elements:els, localRefs:localRefs, missing:missing,
+      dropped:dropped, total:total, over:total>CLIP.maxInputs
     };
   }
   function clipPromptText(proj, pid){
-    var sp=peekSpec(proj, pid), plan=clipPlan(proj, pid), elIdx={};
+    var sp=peekSpec(proj, pid), plan=clipPlan(proj, pid), elIdx={}, localIdx={};
     plan.elements.forEach(function(el, k){ elIdx[el.key]=k+1; });
+    plan.localRefs.forEach(function(x){ localIdx[x.el.key]=x.imageIndex; });
     var text=replaceMentions(proj, pid, sp.vprompt.trim(), "clip", function(t){
       if(t.kind==="edited") return "@image_1";
       if(t.kind==="original") return "@image_2";
       if(t.kind==="ref" && plan.refImage[t.n]) return "@image_"+plan.refImage[t.n];
       if(t.kind==="element" && elIdx[t.el.key]) return "@element_"+elIdx[t.el.key];
+      if(t.kind==="element" && localIdx[t.el.key]) return "@image_"+localIdx[t.el.key];
       return null;
     });
-    return clipHead(proj, plan.refs.length, plan.elements)+"\n\n"+text;
+    var head=clipHead(proj, plan.refs.length, plan.elements);
+    plan.localRefs.forEach(function(x){
+      head+=" @image_"+x.imageIndex+" shows "+x.el.name+
+        (String(x.el.desc||"").trim() ? ": "+String(x.el.desc).trim() : "")+
+        ". Use this photo as an appearance reference for the named subject.";
+    });
+    return head+"\n\n"+text;
   }
   // 예전 이름 유지: 영상에 들어가는 이미지(가공 → 원본 → 레퍼런스).
   function clipInputs(proj, pid){ return clipPlan(proj, pid).images; }
@@ -3328,6 +3348,7 @@
     var ns=plan.refs.map(function(x){ return x.n; });
     if(ns.length) parts.push("레퍼런스 "+ns.join("·")+"번");
     plan.elements.forEach(function(el){ parts.push(el.name); });
+    plan.localRefs.forEach(function(x){ parts.push(x.el.name+"(사진 참조)"); });
     var t="영상에 들어가는 것: "+parts.join(" · ")+" ("+plan.total+"/"+CLIP.maxInputs+")";
     if(plan.dropped.length) t+=" — 자리가 없어 레퍼런스 "+plan.dropped.join("·")+"번은 빠져요";
     if(plan.over) t+=" — 최대 "+CLIP.maxInputs+"개라 프롬프트에서 부른 레퍼런스나 요소를 줄여야 보낼 수 있어요";
@@ -3336,7 +3357,10 @@
   // Kling 이미지 조건: 가로·세로 300px 이상, 비율 1:2.5 ~ 2.5:1. 크기를 아는 것만 미리 본다.
   function clipInputProblem(proj, pid){
     var e=(proj.edits||{})[pid] || {}, ph=(proj.photos||[]).find(function(x){ return x.id===pid; }) || {};
-    var list=[["가공 사진", e], ["원본", ph]].concat(clipPlan(proj, pid).refs.map(function(r){ return ["레퍼런스 "+r.n+"번", r]; }));
+    var plan=clipPlan(proj,pid);
+    var list=[["가공 사진", e], ["원본", ph]]
+      .concat(plan.refs.map(function(r){ return ["레퍼런스 "+r.n+"번", r]; }))
+      .concat(plan.localRefs.map(function(x){ return ["요소 「"+x.el.name+"」", x.photo]; }));
     for(var k=0;k<list.length;k++){
       var w=+list[k][1].w||0, h=+list[k][1].h||0;
       if(!(w>0 && h>0)) continue;
@@ -3345,18 +3369,12 @@
     }
     return "";
   }
-  // 보내기 전에 막아야 하는 것: 7개 초과, Kling 등록이 안 된 요소.
+  // Kling 미등록·등록 중·실패 요소도 기준 사진을 참조하므로 영상 요청을 막지 않는다.
+  // 이름/사진이 없거나 이미지·요소 수가 한도를 넘는 경우만 차단한다.
   function clipBlocker(proj, pid){
     var plan=clipPlan(proj, pid);
+    if(plan.missing.length) return "["+plan.missing[0].name+"] — 요소 사진을 먼저 추가해주세요.";
     if(plan.over) return "영상에 넣을 이미지·요소가 "+plan.total+"개예요 (최대 "+CLIP.maxInputs+"개). 요소를 줄여주세요.";
-    for(var k=0;k<plan.elements.length;k++){
-      var el=plan.elements[k], st=elemState(proj, el);
-      if(st==="ready") continue;
-      if(st==="pending") return "["+el.name+"] — Kling 등록이 아직 안 끝났어요.";
-      if(st==="stale") return "["+el.name+"] — 사진이 바뀌어서 Kling 에 다시 등록해야 해요.";
-      if(st==="failed") return "["+el.name+"] — Kling 등록이 실패했어요. 다시 등록해주세요.";
-      return "["+el.name+"] — Kling 에 아직 등록하지 않았어요.";
-    }
     return clipInputProblem(proj, pid);
   }
   // 영상 길이는 사진마다 키보드로 적는다. 비우면 5초. 3~15 정수가 아니면 null(만들기 전에 막는다).
@@ -3713,12 +3731,13 @@
       body:JSON.stringify({action:"element_delete", elementId:String(elementId)})}).catch(function(){});
   }
 
-  // Kling 등록: 작업만 걸고 돌아온다. 결과는 clipPollTick → elemCheck 가 확인한다.
+  // Kling 고정 요소 등록(선택). 사진 한 장만 있으면 등록 없이 이미지 참조로 사용한다.
   async function elemRegister(key){
     var proj=current, el=elemByKey(proj, key);
     if(!el || elemInflight[key]) return;
     var st=elemState(proj, el);
-    if(st==="draft"){ elemErrors[key]="이름·설명·정면 사진·다른 각도 사진(1장 이상)을 채워주세요."; renderClipsSoon(proj); return; }
+    if(st==="draft"){ elemErrors[key]="요소 이름과 기준 사진 한 장을 먼저 넣어주세요."; renderClipsSoon(proj); return; }
+    if(st==="local"){ elemErrors[key]="사진 한 장으로 이미 사용할 수 있어요. Kling 고정 요소로 등록하려면 다른 각도 사진을 한 장 이상 추가해주세요."; renderClipsSoon(proj); return; }
     if(st==="pending" || st==="ready") return;
     var prev=el.kling || null;
     var body={action:"element_create", projectId:proj.id, name:el.name, desc:String(el.desc||"").trim(),
@@ -3800,9 +3819,10 @@
 
   function elemSection(){
     var els=elemList(current);
-    var h='<div class="elems"><label class="elab">요소 <span>이 숙소에서 쓸 사람·물건</span></label>'+
-      '<p class="hint" style="margin:0 0 4px">정면 1장 + 다른 각도 1~'+ELEM.maxAngles+'장, 이름·설명을 넣고 Kling 에 등록해요. '+
-      '프롬프트에 [이름] 으로 쓰면(@ 로 골라도 돼요) 사진 가공에는 이 사진들이 레퍼런스로, 영상화에는 Kling 요소로 들어가요.</p>';
+    var h='<div class="elems"><label class="elab">요소 <span>이 숙소에서 쓸 사람·물건·배경</span></label>'+
+      '<p class="hint" style="margin:0 0 4px">이름과 기준 사진 1장만 넣으면 바로 사용해요. 설명과 다른 각도(최대 '+ELEM.maxAngles+'장)는 선택사항이에요. '+
+      '[이름] 또는 @ 목록으로 부르면 사진 가공과 영상화에 자동으로 사진 참조가 들어가요. '+
+      '사진을 추가하면 Kling 고정 요소로도 등록할 수 있어요. 카테고리는 따로 고를 필요 없어요.</p>';
     els.forEach(function(el){ h+=elemCard(el); });
     h+='<button type="button" class="eadd" id="elemadd" style="margin-top:8px">+ 요소 추가</button></div>';
     return h;
@@ -3824,22 +3844,23 @@
     h+='</div><div class="elem-f">'+
       '<input class="nm'+(draft ? ' bad' : '')+'" type="text" data-elname="'+key+'" maxlength="'+ELEM.nameMax+'" placeholder="이름 (예: 아이)" value="'+
         esc(draft ? elemDrafts[el.key] : (el.name||""))+'" aria-label="요소 이름" autocomplete="off">'+
-      '<input type="text" data-eldesc="'+key+'" maxlength="'+ELEM.descMax+'" placeholder="설명 (예: 7세 여자아이, 단발머리)" value="'+esc(el.desc||"")+'" aria-label="요소 설명" autocomplete="off">'+
+      '<input type="text" data-eldesc="'+key+'" maxlength="'+ELEM.descMax+'" placeholder="설명 (선택 · 예: 7세 여자아이)" value="'+esc(el.desc||"")+'" aria-label="요소 설명 (선택)" autocomplete="off">'+
       '</div>';
     return h+'<div data-elstate="'+key+'">'+elemStateHtml(el)+'</div></div>';
   }
-  // 등록 상태 · 버튼 · 오류. 이름·설명을 적는 동안에는 이 부분만 다시 그린다.
+  // 등록 상태 · 버튼 · 오류. 사진만 있어도 가공/영상화 참조 가능.
   function elemStateHtml(el){
     var st=elemState(current, el), k=el.kling || {}, key=esc(el.key), h='';
     var label={
-      draft:"Kling 등록 전 — 이름·설명·정면·다른 각도 사진을 채워주세요",
-      "new":"Kling 등록 전 — 등록해야 영상에 쓸 수 있어요 (사진 가공은 바로 돼요)",
-      pending:"Kling 등록 중…",
-      ready:"Kling 준비됨",
-      failed:"Kling 등록 실패"+(k.msg ? ": "+k.msg : ""),
-      stale:"사진이 바뀌었어요 — 다시 등록해야 영상에 써요"
+      draft:"요소 이름과 기준 사진을 넣으면 바로 사용할 수 있어요",
+      local:"사진 1장으로 가공·영상화 사용 가능 · Kling 고정 등록은 추가 사진이 필요해요",
+      "new":"사진 참조로 바로 사용 가능 · 원하면 Kling 고정 요소 등록",
+      pending:"사진 참조로 사용 가능 · Kling 고정 요소 등록 중…",
+      ready:"Kling 고정 요소 준비됨",
+      failed:"사진 참조로 사용 가능 · Kling 고정 등록 실패"+(k.msg ? ": "+k.msg : ""),
+      stale:"사진 참조로 사용 가능 · 변경된 사진은 Kling 고정 요소를 다시 등록해야 해요"
     }[st];
-    var cls=st==="ready" ? " ok" : (st==="failed" || st==="stale") ? " bad" : "";
+    var cls=(st==="ready" || st==="local" || st==="new") ? " ok" : (st==="failed" || st==="stale") ? " bad" : "";
     h+='<div class="elem-k"><span class="st'+cls+'">'+esc(label)+'</span>'+
       (st==="new" || st==="failed" || st==="stale"
         ? '<button type="button" class="primary" data-elreg="'+key+'">'+(st==="new" ? "Kling 등록" : "다시 등록")+'</button>' : '')+

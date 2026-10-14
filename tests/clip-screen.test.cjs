@@ -152,22 +152,30 @@ test("request: 7 inputs in total — refs not named in the prompt drop from the 
   assert.match(sb.clipInputsHint(proj,ORIGINAL),/\(8\/7\) — 자리가 없어 레퍼런스 5·6·7번은 빠져요 — 최대 7개라 프롬프트에서 부른 레퍼런스나 요소를 줄여야 보낼 수 있어요$/);
 });
 
-test("elements must be registered with Kling (and match their current photos) before a video is sent",()=>{
+test("a stale, pending, failed or unregistered Kling element can still be used as a photo reference",()=>{
   const sb=sandbox(), proj=project([1],"[아이]가 뛰어요");
   const kid=proj.elements[0];
   assert.equal(sb.clipBlocker(proj,ORIGINAL),"");
   kid.angles.push({id:EL("kid2"),w:800,h:1000});
   assert.equal(sb.elemState(proj,kid),"stale");
-  assert.match(sb.clipBlocker(proj,ORIGINAL),/\[아이\] — 사진이 바뀌어서 Kling 에 다시 등록해야 해요/);
+  assert.equal(sb.clipBlocker(proj,ORIGINAL),"","stale native registration falls back to photo");
+  let r=sb.clipRequest(proj,ORIGINAL);
+  assert.deepEqual(plain(r.elements),[]);
+  assert.deepEqual(plain(r.refs),[REF(1),EL("kidf")]);
+  assert.match(r.prompt,/@image_4/);
   kid.kling={status:"pending",taskId:"t",sig:"x",at:Date.now()};
-  assert.match(sb.clipBlocker(proj,ORIGINAL),/Kling 등록이 아직 안 끝났어요/);
+  assert.equal(sb.clipBlocker(proj,ORIGINAL),"","registration in progress does not block photo mode");
   kid.kling={status:"failed",msg:"bad",sig:"x",at:1};
-  assert.match(sb.clipBlocker(proj,ORIGINAL),/Kling 등록이 실패했어요/);
+  assert.equal(sb.clipBlocker(proj,ORIGINAL),"","failed registration does not block photo mode");
   delete kid.kling;
-  assert.match(sb.clipBlocker(proj,ORIGINAL),/Kling 에 아직 등록하지 않았어요/);
-  // 영상화에 안 부른 요소는 상태와 상관없다
+  assert.equal(sb.clipBlocker(proj,ORIGINAL),"","unregistered element uses its front photo");
+  const local=sb.clipPlan(proj,ORIGINAL);
+  assert.equal(local.localRefs.length,1);
+  assert.equal(local.elements.length,0);
+  // An unmentioned element never consumes an input.
   proj.editSpecs[ORIGINAL].vprompt="[강아지]가 뛰어요";
   assert.equal(sb.clipBlocker(proj,ORIGINAL),"");
+  assert.deepEqual(plain(sb.clipRequest(proj,ORIGINAL).elements),["9002"]);
 });
 
 test("length is typed per video: blank → 5, any whole 3-15, otherwise blocked",()=>{
@@ -380,4 +388,39 @@ test("clips are cleaned up with their photo and project, kept across reloads, an
   assert.match(html,/v\.clips=Object\.assign\(\{\}, v\.clips\|\|\{\}\);/);
   assert.match(html,/v\.clipJobs=JSON\.parse\(JSON\.stringify\(v\.clipJobs\|\|\{\}\)\);/);
   assert.match(html,/if\(clipJobIds\(current\)\.length\) ensureClipPoll\(\);/);
+});
+
+
+test("one-photo no-description [아이] in Kling video becomes @image_N without creating a native Kling element",()=>{
+  const sb=sandbox(), proj=project([1],"[아이]가 [원본]에서 웃어요");
+  const kid=proj.elements[0];
+  kid.angles=[]; kid.desc=""; delete kid.kling;
+  assert.equal(sb.elemState(proj,kid),"local");
+  assert.equal(sb.clipBlocker(proj,ORIGINAL),"");
+  const plan=sb.clipPlan(proj,ORIGINAL), r=sb.clipRequest(proj,ORIGINAL);
+  assert.deepEqual(plain(plan.images),[EDITED,ORIGINAL,REF(1),EL("kidf")]);
+  assert.deepEqual(plain(r.refs),[REF(1),EL("kidf")]);
+  assert.deepEqual(plain(r.elements),[],"no Kling element ID is invented");
+  assert.equal(plan.total,4);
+  assert.match(r.prompt,/@image_4 shows 아이/);
+  assert.match(r.prompt,/\n\n@image_4가 @image_2에서 웃어요$/);
+  assert.match(sb.clipInputsHint(proj,ORIGINAL),/아이\(사진 참조\) \(4\/7\)/);
+  kid.front.w=200; kid.front.h=1000;
+  assert.match(sb.clipBlocker(proj,ORIGINAL),/요소 「아이」이 너무 작아요/);
+  kid.front.w=800; kid.front.h=1000;
+  kid.front=null;
+  assert.match(sb.clipBlocker(proj,ORIGINAL),/\[아이\] — 요소 사진을 먼저 추가해주세요/);
+});
+
+test("local image elements and ready Kling IDs share the same seven-input budget and ordering",()=>{
+  const sb=sandbox(), proj=project([1,2,3,4,5],"[레퍼런스5] [아이] [강아지]");
+  const kid=proj.elements[0];kid.angles=[];delete kid.kling;kid.desc="";
+  const p=sb.clipPlan(proj,ORIGINAL),r=sb.clipRequest(proj,ORIGINAL);
+  assert.equal(p.total,7);
+  assert.deepEqual(plain(p.refs.map(x=>x.n)),[1,2,5]);
+  assert.deepEqual(plain(p.localRefs.map(x=>x.imageIndex)),[6]);
+  assert.deepEqual(plain(r.refs),[REF(1),REF(2),REF(5),EL("kidf")]);
+  assert.deepEqual(plain(r.elements),["9002"]);
+  assert.match(r.prompt,/@image_6\s+@element_1/);
+  assert.equal(sb.clipBlocker(proj,ORIGINAL),"");
 });

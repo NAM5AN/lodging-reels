@@ -117,7 +117,8 @@ export function validateStart(body: unknown, uid: string): StartInput | Fail {
   }
   const refs = Array.isArray(b.refs) ? b.refs : [];
   for (const r of refs) {
-    if (!checkPath(r, uid, ["ref"]) || !inProject(r)) return fail("bad_ref", "레퍼런스 경로가 올바르지 않아요.");
+    // 프롬프트의 1장짜리/미등록 요소는 사용자 본인의 element 폴더 사진으로 참조할 수 있다.
+    if (!checkPath(r, uid, ["ref", "element"]) || !inProject(r)) return fail("bad_ref", "레퍼런스 경로가 올바르지 않아요.");
   }
   const rawElements = Array.isArray(b.elements) ? b.elements : [];
   const elements: string[] = [];
@@ -199,8 +200,9 @@ export function validateElement(body: unknown, uid: string): ElementInput | Fail
   if (!name) return fail("bad_name", "요소 이름이 비었어요.");
   if (name.length > ELEMENT_NAME_MAX) return fail("bad_name", "요소 이름은 " + ELEMENT_NAME_MAX + "자까지예요.");
   if (/[\[\]@]/.test(name) || RESERVED.test(name)) return fail("bad_name", "쓸 수 없는 요소 이름이에요.");
-  const desc = typeof b.desc === "string" ? b.desc.trim() : "";
-  if (!desc) return fail("bad_desc", "요소 설명이 비었어요.");
+  // Kling 고정 요소 등록 API는 description 필수. 앱 입력은 선택사항이라 이름으로 기본값을 채운다.
+  const typedDesc = typeof b.desc === "string" ? b.desc.trim() : "";
+  const desc = typedDesc || name;
   if (desc.length > ELEMENT_DESC_MAX) return fail("bad_desc", "요소 설명은 " + ELEMENT_DESC_MAX + "자까지예요.");
   const inProject = (p: string) => p.split("/")[1] === projectId;
   if (!checkPath(b.front, uid, ["element"]) || !inProject(b.front)) return fail("bad_front", "정면 사진 경로가 올바르지 않아요.");

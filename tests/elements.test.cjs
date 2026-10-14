@@ -109,10 +109,12 @@ test("element state: draft until complete, then new → pending → ready; chang
   assert.equal(sb.elemState(proj,kid),"ready");
   assert.equal(sb.elemState(proj,dog),"new");
   dog.desc=" ";
-  assert.equal(sb.elemState(proj,dog),"draft","description required");
-  dog.desc="갈색 푸들";
+  assert.equal(sb.elemState(proj,dog),"new","description is optional");
   dog.angles=[];
-  assert.equal(sb.elemState(proj,dog),"draft","at least one other angle");
+  assert.equal(sb.elemState(proj,dog),"local","one photo is already usable as a local element");
+  dog.front=null;
+  assert.equal(sb.elemState(proj,dog),"draft","the single main photo is needed");
+  dog.front={id:EL("dogf"),w:800,h:1000};
   dog.angles=[{id:EL("doga")}];
   dog.kling={status:"pending",taskId:"t",sig:sb.elemSig(dog),at:Date.now()};
   assert.equal(sb.elemState(proj,dog),"pending");
@@ -291,12 +293,13 @@ test("register: one Kling request per tap, saved as pending, then ready (old Kli
 test("register: incomplete elements and request failures never leave a stuck pending state",async()=>{
   const t=sandbox(project(),[{status:404,body:{}},{status:502,body:{error:"kling_auth",message:"Kling API 키가 거부됐어요."}}]);
   const proj=t.sb.current, dog=proj.elements[1];
-  dog.desc="";
+  dog.desc=""; dog.angles=[];
   await t.sb.elemRegister("k_dog");
   assert.equal(t.calls.length,0);
-  assert.match(t.sb.elemErrors.k_dog,/채워주세요/);
-  dog.desc="푸들";
+  assert.match(t.sb.elemErrors.k_dog,/사진 한 장으로 이미 사용할 수 있어요/);
+  dog.angles=[{id:EL("doga")}];
   await t.sb.elemRegister("k_dog");
+  assert.equal(t.calls[0].body.desc,"","optional description remains empty in the client; server supplies name");
   assert.ok(!dog.kling,"rolled back");
   assert.match(t.sb.elemErrors.k_dog,/lodging-reels-clip\)가 아직 배포되지 않았어요/);
   await t.sb.elemRegister("k_dog");
@@ -355,4 +358,28 @@ test("screen wiring: panel, row warnings, @ list and live updates are bound; dat
   assert.match(rm,/el\.front\]\.concat\(el\.angles/);
   assert.match(rm,/klingElementDelete\(el\.kling\.elementId\)/);
   assert.match(grab("clipPollTick(){"),/elemCheck\(proj, k\)/,"element registration is checked on the clip timer");
+});
+
+
+test("one-photo element with empty description is usable in photo editing without Kling registration",()=>{
+  const proj=project();
+  const solo={key:"k_solo",name:"토끼",desc:"",front:{id:EL("solof"),w:720,h:900},angles:[]};
+  proj.elements.push(solo);
+  proj.editSpecs[PH3].prompt="[토끼]가 창가에 있어요";
+  const {sb}=sandbox(proj);
+  assert.equal(sb.elemState(proj,solo),"local");
+  assert.deepEqual(plain(sb.editRefPlan(proj,PH3).ids),[EL("solof")]);
+  assert.deepEqual(plain(sb.mentionedElements(proj,PH3,proj.editSpecs[PH3].prompt,"edit")).map(x=>x.name),["토끼"]);
+  assert.equal(sb.mentionWarnings(proj,PH3,proj.editSpecs[PH3].prompt,"edit").length,0);
+  assert.deepEqual(plain(sb.mentionOptions(proj,PH3,"edit","토끼")).map(x=>x.label),["토끼"]);
+});
+
+test("elements UI offers a single-photo path, optional description and no category dropdown",()=>{
+  const section=grab("elemSection(){"),card=grab("elemCard(el){"),state=grab("elemStateHtml(el){");
+  assert.match(section,/이름과 기준 사진 1장만 넣으면 바로 사용해요/);
+  assert.match(section,/설명과 다른 각도/);
+  assert.match(section,/카테고리는 따로 고를 필요 없어요/);
+  assert.match(card,/설명 \(선택/);
+  assert.match(state,/local:"사진 1장으로 가공·영상화 사용 가능/);
+  assert.doesNotMatch(section+card,/data-elcategory|data-eltype|카테고리 선택/);
 });
