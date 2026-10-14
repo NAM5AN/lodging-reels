@@ -338,7 +338,9 @@ test("steps are renumbered: ⑨ 가공 → ⑩ 컷 배치 → ⑪ 영상",()=>{
 
 test("video and cut picker read through srcId, never photo.id directly",()=>{
   assert.ok(html.includes("imgs.push(await loadImg(blobUrl(srcId(photos[i]))))"));
-  assert.ok(html.includes("coverImg=clipVideos[cIdx] ? await loadImg(blobUrl(srcId(photos[cIdx]))) : imgs[cIdx]"),
-    "cover still uses the source photo even when its ⑪ cut uses a Kling MP4");
+  assert.ok(html.includes("coverCanvas=await makeSelectedCoverCanvas(current)"),
+    "cover now takes the user's selected frame from the whole ⑪ timeline, including valid Kling MP4 cuts");
+  assert.ok(html.includes("g.drawImage(coverCanvas,0,0,VIDEO.w,VIDEO.h)"),
+    "the precomposed title/overlay cover becomes the actual beginning of the rendered MP4");
   assert.ok(!/loadImg\(blobUrl\(photos\[/.test(html),"no renderer reads the raw photo");
 });

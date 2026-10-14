@@ -1410,7 +1410,7 @@
     h+=trackRow({k:"bgm",h:"배경음악",hint:"영상 길이에 맞춰 반복 재생돼요."});
     h+='<div class="tbox" id="thumbbox"><h3 style="margin:0 0 8px">썸네일 프레임 선택</h3>'+
        '<p class="hint" style="margin:0 0 8px">⑪ 전체 영상에서 원하는 시점을 고르세요. Kling 영상·사진·마젠타 구간 모두 선택할 수 있어요. '+
-       '미리보기와 저장 파일에는 자막 및 커버 문구가 들어가지 않아요.</p>';
+       '검은 반투명 배경과 커버 타이틀은 미리보기·저장 JPG·완성 영상 첫 커버에 똑같이 적용돼요. 본문 자막은 들어가지 않아요.</p>';
     if(timelineReady() && (current.photos||[]).length){
       var total=thumbnailDuration(current), selected=thumbnailSelectedTime(current);
       h+='<label for="thumbtime" class="elab">전체 영상에서 프레임 위치</label>'+
@@ -2457,8 +2457,12 @@
   }
 
   function drawCover(g,im,lines){
-    var W=VIDEO.w,H=VIDEO.h;
     drawFill(g,im,1,0.5,0.5);
+    drawCoverOverlay(g,lines);
+  }
+  // 미리보기·JPG·최종 MP4 첫 프레임이 같은 타이틀과 어둡기를 쓰도록 공유.
+  function drawCoverOverlay(g,lines){
+    var W=VIDEO.w,H=VIDEO.h;
     g.fillStyle="rgba(0,0,0,0.40)"; g.fillRect(0,0,W,H);
     g.textAlign="center"; g.lineJoin="round";
 
@@ -2552,7 +2556,7 @@
   function thumbnailSelectedTime(proj){
     var v=Number(proj && proj.thumbTime);
     if(!proj || proj.thumbTime===undefined || proj.thumbTime===null || !Number.isFinite(v)){
-      v=VIDEO.coverHold+0.5; // 처음에는 커버를 지난 첫 장면에서 선택 시작
+      v=0; // 이전 숙소는 기존 커버 사진으로 시작. 슬라이더 이동 시에만 다른 시점으로 바뀜
     }
     return Math.max(0,Math.min(thumbnailLastFrame(proj),v));
   }
@@ -2628,7 +2632,7 @@
     });
   }
   function drawThumbnailFrame(g, plan, media){
-    // 자막, 커버 제목, 어두운 오버레이는 어떤 경우에도 쓰지 않는다.
+    // ⑪ 본문 자막 없이 선택 시점의 사진/영상/마젠타만 먼저 그린다.
     if(plan.kind==="video"){
       if(plan.elapsed>=media.duration || media.ended || media.readyState<2 || media.seeking){
         drawMagentaCut(g,"");return "마젠타";
@@ -2638,6 +2642,32 @@
     }
     drawFill(g,media,plan.zoom,0.5,0.5);
     return plan.cover?"커버 구간의 원본 사진":"사진";
+  }
+  // 선택한 장면 위에 ⑪ 첫 커버와 동일한 어둡기·커버 타이틀을 합성한다.
+  // 일반 본문 자막은 한 줄도 그리지 않는다.
+  function drawSelectedCover(g,plan,media,proj){
+    var label=drawThumbnailFrame(g,plan,media);
+    var cover=(proj.cover||"").split("\n").map(function(x){return x.trim()});
+    drawCoverOverlay(g,cover);
+    return label;
+  }
+  // 최종 영상 제작 전 선택한 프레임을 독립 캔버스에 확정한다.
+  // 이를 커버 0.5초 동안 그대로 사용하므로 드래그/디코딩 타이밍에 따라 첫 장이 바뀌지 않는다.
+  async function makeSelectedCoverCanvas(proj){
+    var plan=thumbnailFramePlan(proj,thumbnailSelectedTime(proj));
+    if(!plan)throw new Error("썸네일로 사용할 사진이 없어요.");
+    var canvas=document.createElement("canvas");
+    canvas.width=VIDEO.w;canvas.height=VIDEO.h;
+    var media=null;
+    try{
+      media=plan.kind==="video"?await loadClipVideo(blobUrl(plan.path))
+                                 :await loadImg(blobUrl(plan.path));
+      if(plan.kind==="video" && plan.elapsed<media.duration)await seekClipFrame(media,plan.elapsed);
+      drawSelectedCover(canvas.getContext("2d"),plan,media,proj);
+      return canvas;
+    }finally{
+      if(plan.kind==="video" && media)releaseClipVideos([{video:media}]);
+    }
   }
 
   var thumbMedia=null,thumbRequestSeq=0,thumbRenderQueue=Promise.resolve(),thumbDebounce=null,thumbProjectId=null;
@@ -2670,8 +2700,8 @@
         if(plan.kind==="video" && plan.elapsed<media.duration)await seekClipFrame(media,plan.elapsed);
         if(seq!==thumbRequestSeq || current!==proj || canvas!==document.getElementById("thumbframe"))return false;
         var g=canvas.getContext("2d");
-        var label=drawThumbnailFrame(g,plan,media);
-        if(status){status.textContent="프레임 "+thumbClock(time)+" · "+label+" · 자막 없음";status.className="status";}
+        var label=drawSelectedCover(g,plan,media,proj);
+        if(status){status.textContent="프레임 "+thumbClock(time)+" · "+label+" · 커버 타이틀 표시 / 본문 자막 없음";status.className="status";}
         return true;
       }catch(e){
         if(status && seq===thumbRequestSeq){
@@ -2700,7 +2730,7 @@
       if(!blob)throw new Error("JPG 변환에 실패했어요.");
       if(!downloads)throw new Error("이 화면에서는 저장을 못 해요.");
       await downloads.save({filename:((proj.folder||"reels").trim())+"_cover.jpg",data:blob});
-      if(status){status.textContent="자막 없는 썸네일 "+thumbClock(time)+" 프레임을 저장했어요.";status.className="status";}
+      if(status){status.textContent="커버 타이틀이 포함된 썸네일 "+thumbClock(time)+" 프레임을 저장했어요.";status.className="status";}
     }catch(e){
       if(status){status.textContent=(e&&e.message)||"썸네일을 저장하지 못했어요.";status.className="status bad";}
     }finally{
@@ -2742,9 +2772,7 @@
     // ⑩의 선택은 사진 ID 그대로 유지한다. 유효한 ⑨ 영상이 있으면 ⑪에서만 MP4를 우선한다.
     var renderMap=ensureMap(), selectedPhotos={};
     renderMap.forEach(function(pi){ selectedPhotos[pi]=true; });
-    var cIdx=(typeof current.coverPhoto==="number" && current.coverPhoto<photos.length &&
-              current.coverPhoto>=0) ? current.coverPhoto : 0;
-    var imgs=[], clipVideos=[], coverImg=null;
+    var imgs=[], clipVideos=[], coverCanvas=null;
     try{
       for(var i=0;i<photos.length;i++){
         var clip=selectedPhotos[i] ? renderClipForPhoto(current,photos[i]) : null;
@@ -2756,8 +2784,9 @@
           imgs.push(await loadImg(blobUrl(srcId(photos[i]))));
         }
       }
-      // 썸네일/커버만큼은 MP4가 아니라 기존 사진을 사용한다.
-      coverImg=clipVideos[cIdx] ? await loadImg(blobUrl(srcId(photos[cIdx]))) : imgs[cIdx];
+      // 선택한 ⑪ 전체 영상 시점에서 커버 한 장을 캡처한다.
+      // 기존 사진, Kling MP4, 부족 구간 마젠타 모두 사용 가능하며 커버 문구까지 합성한다.
+      coverCanvas=await makeSelectedCoverCanvas(current);
     }catch(e){
       releaseClipVideos(clipVideos);
       st("사진·Kling 영상 준비 실패: "+((e&&e.message)||"파일을 확인해주세요."),true); return;
@@ -2765,7 +2794,6 @@
 
     var cuts=(current.script||"").split("\n").map(function(x){return x.trim()})
              .filter(function(x){return x});
-    var cover=(current.cover||"").split("\n").map(function(x){return x.trim()});
 
     // 두 트랙을 따로 받아 각자 음량을 먹인 뒤 한 갈래로 합친다.
     var actx=null, dest=null, narBuf=null, bgmBuf=null;
@@ -2865,7 +2893,7 @@
             if(playbackError) throw playbackError;
             var el=performance.now()-t0;
             if(el>=total){ res(); return; }
-            if(el<coverMs){ drawCover(g,coverImg,cover); }
+            if(el<coverMs){ g.drawImage(coverCanvas,0,0,VIDEO.w,VIDEO.h); }
             else{
               var rel=(el-coverMs)/1000, lo=0, hi=N-1;
               while(lo<hi){

@@ -119,7 +119,8 @@ test("Kling inputs are silent and not set to loop; source plays are reset only o
   assert.match(render,/elapsed>=clip\.duration/);
   assert.match(render,/drawClipCut\(g,clip\.video/);
   assert.match(render,/drawCut\(g,imgs\[pi\]/);
-  assert.match(render,/drawCover\(g,coverImg,cover\)/);
+  assert.match(render,/g\.drawImage\(coverCanvas,0,0,VIDEO\.w,VIDEO\.h\)/);
+  assert.match(render,/coverCanvas=await makeSelectedCoverCanvas\(current\)/);
   assert.doesNotMatch(render,/api\(FN\.clip/,"final render never starts new paid Kling jobs");
 });
 

@@ -21,7 +21,9 @@ const sigs=[
   "thumbnailSelectedTime(proj){","thumbClock(time){",
   "thumbnailFramePlan(proj, time){",
   "drawFill(g,im,zoom,cx,cy){","drawCutText(g,text){",
-  "drawMagentaCut(g,text){","drawThumbnailFrame(g, plan, media){"
+  "drawMagentaCut(g,text){","drawThumbnailFrame(g, plan, media){",
+  "wrapText(t,max){","drawCoverOverlay(g,lines){",
+  "drawSelectedCover(g,plan,media,proj){"
 ];
 function harness(){
   const calls=[];
@@ -60,7 +62,9 @@ test("selector covers the whole voice-aligned ⑪ reel including 0.5s cover, not
   const {ctx}=harness(),p=project();
   assert.equal(ctx.thumbnailDuration(p),4.5);
   assert.ok(Math.abs(ctx.thumbnailLastFrame(p)-(4.5-1/30))<1e-9);
-  assert.equal(ctx.thumbnailSelectedTime(p),1);
+  assert.equal(ctx.thumbnailSelectedTime(p),0,"legacy projects keep their old cover until a new frame is selected");
+  p.thumbTime=5.73;
+  assert.equal(ctx.thumbnailSelectedTime(p),4.5-1/30,"saved selection must be clamped to timeline length");
   p.thumbTime=0;
   assert.equal(ctx.thumbnailSelectedTime(p),0,"zero is a real manual choice");
   p.thumbTime=999;
@@ -172,9 +176,9 @@ test("slider, timestamp and selected frame survive project saves; export is capt
   assert.match(thumbSave,/requestThumbnailFrame\(proj,time\)/);
   assert.match(thumbSave,/canvas\.toBlob\(resolve,"image\/jpeg",0\.95\)/);
   assert.match(thumbSave,/download[s]\.save/);
-  assert.match(thumbRender,/drawThumbnailFrame\(g,plan,media\)/);
+  assert.match(thumbRender,/drawSelectedCover\(g,plan,media,proj\)/);
   assert.doesNotMatch(thumbSave,/drawCover\(|drawCutText\(/,"save doesn't add cover title or subtitles");
-  assert.match(videoUI,/자막 및 커버 문구가 들어가지 않아요/);
+  assert.match(videoUI,/검은 반투명 배경과 커버 타이틀은 미리보기·저장 JPG·완성 영상 첫 커버에 똑같이 적용돼요/);
   assert.doesNotMatch(videoUI,/id="mkthumb"/,"old fixed-cover thumbnail button removed");
 });
 
@@ -182,7 +186,73 @@ test("full ⑪ video rendering remains independent of thumbnail time and does no
   const main=grab("makeVideo(){");
   assert.match(main,/var renderMap=ensureMap/);
   assert.match(main,/drawClipCut\(g,clip\.video/);
-  assert.match(main,/drawCover\(g,coverImg,cover\)/);
+  assert.match(main,/coverCanvas=await makeSelectedCoverCanvas\(current\)/);
+  assert.match(main,/g\.drawImage\(coverCanvas,0,0,VIDEO\.w,VIDEO\.h\)/);
   assert.match(main,/drawCut\(g,imgs\[pi\]/);
-  assert.doesNotMatch(main,/thumbTime|thumbnailFramePlan|FN\.clip/);
+  assert.doesNotMatch(main,/FN\.clip/,"no new paid API calls during render");
+  assert.ok(!main.includes("drawCover(g,coverImg"),"outdated static cover must not be used");
+});
+
+
+test("chosen frame receives identical 40% dark overlay and cover title in thumbnail preview",()=>{
+  const {ctx,g,calls}=harness(),p=project();
+  p.cover="5성급 호텔은\n특별한 여행을";
+  p.thumbTime=2.5;
+  const plan=ctx.thumbnailFramePlan(p,p.thumbTime);
+  const image={width:1080,height:1920};
+  assert.equal(plan.kind,"image","image scene at 2.5s");
+  ctx.drawSelectedCover(g,plan,image,p);
+  assert.deepEqual(calls.map(x=>x.type),["image","fill","text","text"]);
+  assert.equal(calls[1].color,"rgba(0,0,0,0.40)");
+  assert.equal(calls[2].text,"5성급 호텔은");
+  assert.equal(calls[3].text,"특별한 여행을");
+  assert.ok(!calls.some(x=>x.text==="자막"),"normal video captions cannot leak into cover");
+});
+
+test("chosen Kling timestamp is captured as the MP4 cover, then its decoded frame is released",async()=>{
+  const calls=[],video={duration:7,videoWidth:1080,videoHeight:1920};
+  const canv={width:0,height:0,getContext:()=>({tag:"canvas-context"})};
+  const ctx=vm.createContext({
+    VIDEO:{w:1080,h:1920},
+    document:{createElement(tag){assert.equal(tag,"canvas");return canv;}},
+    thumbnailSelectedTime:()=>5.73,
+    thumbnailFramePlan:(proj,time)=>{
+      calls.push({task:"plan",time});
+      return {kind:"video",path:"user/proj/video/kling.mp4",elapsed:2.73};
+    },
+    loadClipVideo:async()=>{calls.push({task:"load"});return video;},
+    blobUrl:(path)=>{calls.push({task:"url",path});return "https://example.test/kling.mp4";},
+    seekClipFrame:async(v,t)=>{assert.strictEqual(v,video);calls.push({task:"seek",time:t});},
+    drawSelectedCover:(g,plan,m,p)=>{
+      assert.deepEqual(g,{tag:"canvas-context"});
+      calls.push({task:"compose"});
+    },
+    releaseClipVideos:(list)=>{assert.strictEqual(list[0].video,video);calls.push({task:"release"});}
+  });
+  vm.runInContext(grab("makeSelectedCoverCanvas(proj){"),ctx);
+  const result=await ctx.makeSelectedCoverCanvas({});
+  assert.strictEqual(result,canv);
+  assert.equal(result.width,1080);
+  assert.equal(result.height,1920);
+  assert.deepEqual(calls.map(x=>x.task),["plan","url","load","seek","compose","release"]);
+  assert.equal(calls[0].time,5.73);
+  assert.equal(calls[3].time,2.73);
+});
+
+test("cover image and video intro use same composed canvas while later cuts keep original subtitles",()=>{
+  const shared=grab("drawCoverOverlay(g,lines){");
+  const cover=grab("drawCover(g,im,lines){");
+  const compose=grab("drawSelectedCover(g,plan,media,proj){");
+  const snapshot=grab("makeSelectedCoverCanvas(proj){");
+  const preview=grab("requestThumbnailFrame(proj, time){");
+  const reel=grab("makeVideo(){");
+  assert.match(shared,/rgba\(0,0,0,0\.40\)/);
+  assert.match(cover,/drawCoverOverlay\(g,lines\)/);
+  assert.match(compose,/drawCoverOverlay\(g,cover\)/);
+  assert.match(snapshot,/drawSelectedCover\(canvas\.getContext\("2d"\),plan,media,proj\)/);
+  assert.match(preview,/drawSelectedCover\(g,plan,media,proj\)/);
+  assert.match(reel,/coverCanvas=await makeSelectedCoverCanvas\(current\)/);
+  assert.match(reel,/g\.drawImage\(coverCanvas,0,0,VIDEO\.w,VIDEO\.h\)/);
+  assert.match(reel,/drawCut\(g,imgs\[pi\],cuts\[idx\]\|\|"",k\)/);
+  assert.match(reel,/drawClipCut\(g,clip\.video,cuts\[idx\]\|\|"",elapsed,clip\.duration\)/);
 });
