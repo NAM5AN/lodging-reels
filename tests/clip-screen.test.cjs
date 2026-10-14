@@ -275,8 +275,8 @@ test("start: one request even when tapped twice, typed length and elements are s
   assert.match(f.sb.clipErrors[ORIGINAL],/1번 영상 요청 실패: Kling API 키가 거부됐어요\./);
 });
 
-test("start: a bad length, an image Kling would reject, an unregistered element or too many inputs never reach the server",async()=>{
-  const t=runner([]);
+test("start: invalid inputs are blocked but unregistered elements can use one photo reference",async()=>{
+  const t=runner([{status:200,body:{operation:{taskId:"tlocal"}}}]);
   const proj=project();
   proj.editSpecs[ORIGINAL].vdur="20";
   await t.sb.clipStart(proj,ORIGINAL);
@@ -289,12 +289,16 @@ test("start: a bad length, an image Kling would reject, an unregistered element 
   delete proj.elements[1].kling;
   proj.editSpecs[ORIGINAL].vprompt="[강아지]가 뛰어요";
   await t.sb.clipStart(proj,ORIGINAL);
-  assert.match(t.sb.clipErrors[ORIGINAL],/\[강아지\] — Kling 에 아직 등록하지 않았어요/);
+  assert.equal(t.calls.length,1,"an unregistered element can start using its photo");
+  assert.deepEqual(t.calls[0].body.refs,[REF(1),REF(2),EL("dogf")]);
+  assert.deepEqual(t.calls[0].body.elements,[],"no made-up Kling element ID");
+  assert.deepEqual(plain(proj.clipJobs[ORIGINAL].op),{taskId:"tlocal"});
+  delete proj.clipJobs[ORIGINAL]; // reset mock job for the later input-limit check
   proj.editSpecs[ORIGINAL].refs=[1,2,3,4,5].map((n)=>({id:REF(n),w:1200,h:1600}));
   proj.editSpecs[ORIGINAL].vprompt="[레퍼런스1][레퍼런스2][레퍼런스3][레퍼런스4][레퍼런스5] [아이]";
   await t.sb.clipStart(proj,ORIGINAL);
   assert.match(t.sb.clipErrors[ORIGINAL],/이미지·요소가 8개예요 \(최대 7개\)/);
-  assert.equal(t.calls.length,0);
+  assert.equal(t.calls.length,1,"only the valid one-photo request reaches the API");
   assert.equal((proj.clipJobs||{})[ORIGINAL],undefined);
 });
 
