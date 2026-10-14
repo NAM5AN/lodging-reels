@@ -338,6 +338,7 @@ test("steps are renumbered: ⑨ 가공 → ⑩ 컷 배치 → ⑪ 영상",()=>{
 
 test("video and cut picker read through srcId, never photo.id directly",()=>{
   assert.ok(html.includes("imgs.push(await loadImg(blobUrl(srcId(photos[i]))))"));
-  assert.ok(html.includes("loadImg(blobUrl(srcId(photos[ci])))"));
+  assert.ok(html.includes("coverImg=clipVideos[cIdx] ? await loadImg(blobUrl(srcId(photos[cIdx]))) : imgs[cIdx]"),
+    "cover still uses the source photo even when its ⑪ cut uses a Kling MP4");
   assert.ok(!/loadImg\(blobUrl\(photos\[/.test(html),"no renderer reads the raw photo");
 });
