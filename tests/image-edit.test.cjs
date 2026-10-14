@@ -60,8 +60,26 @@ test("Sunburst generateImage payload contains source+references in order and ori
   assert.equal(w%16,0);assert.equal(h%16,0);
   assert.ok(Math.abs(w/h-1600/900)<0.012,"request size stays close to source aspect ratio");
   const min=lib.buildPayload(v,imgs,true);
-  assert.deepEqual(Object.keys(min).sort(),["maxRetries","model","n","prompt"]);
+  assert.deepEqual(Object.keys(min).sort(),["maxRetries","model","n","prompt","providerOptions"]);
+  assert.equal(min.size,undefined);
+  assert.equal(min.providerOptions.openai.quality,"xhigh");
+  assert.equal(min.providerOptions.openai.outputFormat,"jpeg");
+  assert.equal(min.providerOptions.openai.outputCompression,90);
   assert.strictEqual(min.prompt.images,imgs,"minimal retry still sends every input image");
+});
+
+test("max quality remains set on a size-only fallback for a small source",()=>{
+  const v=lib.validate({base:photo,baseW:680,baseH:453,refs:[ref1],prompt:"new angle",quality:"max"},UID);
+  const imgs=[Uint8Array.from([1]),Uint8Array.from([2])];
+  const normal=lib.buildPayload(v,imgs,false);
+  const retry=lib.buildPayload(v,imgs,true);
+  assert.equal(normal.size,"992x672");
+  assert.equal(retry.size,undefined);
+  assert.equal(normal.providerOptions.openai.quality,"max");
+  assert.deepEqual(retry.providerOptions,normal.providerOptions,"never remove quality, format or compression");
+  assert.strictEqual(retry.prompt.images,imgs);
+  assert.match(html,/크기만 자동 선택으로 재시도했어요/);
+  assert.ok(!html.includes("크기·품질 옵션 없이 만들어졌어요"));
 });
 
 test("source photos and extra references are downloaded as actual bytes",async()=>{
@@ -111,6 +129,13 @@ test("high-level generateImage receives all visual references through Vercel Gat
   assert.equal(sent.size,"1600x896");
   assert.equal(sent.providerOptions.openai.quality,"high");
   assert.equal(response.images[0].mediaType,"image/jpeg");
+  const fallback=await lib.generateWithReferences(v,images,"TEST_ONLY_OIDC",true,new AbortController().signal,fakeSDK);
+  assert.equal(sent.size,undefined,"size-only retry omits size");
+  assert.equal(sent.providerOptions.openai.quality,"high","SDK still forwards chosen quality");
+  assert.equal(sent.providerOptions.openai.outputFormat,"jpeg");
+  assert.equal(sent.providerOptions.openai.outputCompression,90);
+  assert.strictEqual(sent.prompt.images,images);
+  assert.equal(fallback.images[0].mediaType,"image/jpeg");
   assert.match(html,/원본 사진 1장과 이 사진에 연결된 레퍼런스 사진/);
   assert.match(html,/AI에 실제 이미지 입력으로 전달/);
   assert.ok(!html.includes("AI 미전달"));
@@ -122,11 +147,14 @@ test("image response MIME sniffing remains available as SDK output fallback",()=
   assert.equal(lib.sniffMime("UklGRiQ"),"image/webp");
 });
 
-test("retry only when an optional parameter was rejected",()=>{
-  assert.equal(lib.looksLikeParamError(400,"Unknown parameter: output_compression"),true);
-  assert.equal(lib.looksLikeParamError(400,"Invalid size 1088x1920"),true);
-  assert.equal(lib.looksLikeParamError(401,"unauthorized size"),false);
-  assert.equal(lib.looksLikeParamError(400,"Your request was rejected by the safety system"),false);
+test("retry only on size error, never silently removing max or format options",()=>{
+  assert.equal(lib.looksLikeSizeError(400,"Invalid size '688x448'. Requested resolution is below the current minimum pixel budget."),true);
+  assert.equal(lib.looksLikeSizeError(400,"Invalid size 1088x1920"),true);
+  assert.equal(lib.looksLikeSizeError(422,"Requested resolution too small"),true);
+  assert.equal(lib.looksLikeSizeError(400,"Invalid quality max"),false);
+  assert.equal(lib.looksLikeSizeError(400,"Unknown parameter: output_compression"),false);
+  assert.equal(lib.looksLikeSizeError(401,"unauthorized size"),false);
+  assert.equal(lib.looksLikeSizeError(400,"Your request was rejected by the safety system"),false);
 });
 
 // ---------- 화면 ----------
@@ -240,11 +268,21 @@ test("screen has no shared prompt box or shared reference picker",()=>{
 
 // --- 원본 사진 비율 유지 (가로 · 세로 · 정사각 · 레거시 메타데이터) ---
 test("sizeForAspect preserves source orientation and outputs 16-aligned dimensions",()=>{
+  assert.equal(lib.sizeForAspect(680,453),"992x672");
+  assert.equal(lib.sizeForAspect(453,680),"672x992");
+  assert.equal(lib.sizeForAspect(400,400),"816x816");
   assert.equal(lib.sizeForAspect(1600,900),"1600x896");
   assert.equal(lib.sizeForAspect(900,1600),"896x1600");
   assert.equal(lib.sizeForAspect(1920,1920),"1920x1920");
   assert.equal(lib.sizeForAspect(5000,3000),"1920x1152");
   assert.equal(lib.sizeForAspect(0,0),null);
+  for(const [w,h] of [[680,453],[453,680],[400,400],[1600,900],[900,1600],[5000,3000],[1888,629],[6000,100],[100,6000]]){
+    const [a,b]=lib.sizeForAspect(w,h).split("x").map(Number);
+    assert.equal(a%16,0);assert.equal(b%16,0);
+    assert.ok(a*b>=lib.MIN_PIXELS,"Sunburst minimum pixel budget");
+    assert.ok(Math.max(a,b)/Math.min(a,b)<=3.00001,"Sunburst aspect constraint");
+    assert.ok(Math.max(a,b)<=lib.MAX_EDGE,"max edge budget");
+  }
   const input=lib.validate({base:photo,baseW:900,baseH:1600,refs:[],prompt:"x"},UID);
   assert.equal(input.baseW,900);
   assert.equal(input.baseH,1600);

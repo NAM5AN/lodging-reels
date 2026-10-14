@@ -17,9 +17,10 @@ const BUCKET = "lodging-reels";
 
 const MODEL = "openai/gpt-image-2.5-sunburst";
 
-// 요청 크기는 원본 사진 비율에 가까운 16의 배수로 맞춘다.
-// 긴 변은 최대 1920픽셀로 제한하고, 결과 비율은 브라우저에서 다시 확인한다.
+// 원본 비율 + 최소 655,360픽셀 + 16의 배수. 작은 원본은 요청 크기를 높이고 결과는 브라우저가 원본 비율로 저장한다.
 const MAX_EDGE = 1920;
+const MIN_PIXELS = 655360; // Sunburst 최소 출력 픽셀 예산
+const MAX_RATIO = 3; // Sunburst 종횡비 한도
 const QUALITIES = ["low", "medium", "high", "xhigh", "max"];
 const MAX_REFS = 15;           // 사진별 추가 레퍼런스 최대 15장 (원본 포함 최대 16장).
 const MAX_PROMPT = 32000;
@@ -75,30 +76,37 @@ function validate(body, uid) {
 }
 
 function round16(n){return Math.max(16,Math.round(n/16)*16);}
+function ceil16(n){return Math.max(16,Math.ceil(n/16)*16);}
 function sizeForAspect(w,h){
   if(!(w>0 && h>0))return null;
-  if(w>=h){
-    const outW=round16(Math.min(w,MAX_EDGE));
-    return outW+"x"+round16(outW*h/w);
+  const landscape=w>=h;
+  // 원본 비율은 가능한 유지; 극단적 비율은 모델의 3:1 제한에 맞춰 요청한다.
+  const ratio=Math.min(MAX_RATIO,Math.max(w,h)/Math.min(w,h));
+  const edge=Math.min(Math.max(w,h),MAX_EDGE);
+  let longSide=round16(edge),shortSide=round16(edge/ratio);
+  if(longSide*shortSide<MIN_PIXELS){
+    // 원본이 작아도 출력은 최소 655,360픽셀. 양쪽 모두 올림해서 안전하게 넘긴다.
+    longSide=ceil16(Math.sqrt(MIN_PIXELS*ratio));
+    shortSide=ceil16(Math.sqrt(MIN_PIXELS/ratio));
   }
-  const outH=round16(Math.min(h,MAX_EDGE));
-  return round16(outH*w/h)+"x"+outH;
+  if(longSide>MAX_RATIO*shortSide)shortSide=ceil16(longSide/MAX_RATIO);
+  return landscape?longSide+"x"+shortSide:shortSide+"x"+longSide;
 }
 
-// Generate API 고수준 호출. 실제 이미지 입력은 prompt.images에 원본→레퍼런스 순서로 배치한다.
-function buildPayload(v, images, minimal) {
+// 원본+레퍼런스는 항상 보내고, 선택한 quality / JPEG 옵션은 크기 재시도에도 남긴다.
+function buildPayload(v, images, omitSize) {
   const payload = {
     model: MODEL,
     prompt: { text: v.prompt, images: images },
     n: 1,
-    maxRetries: 0
+    maxRetries: 0,
+    providerOptions: { openai: {
+      quality: v.quality, outputFormat: "jpeg", outputCompression: 90
+    } }
   };
-  if (!minimal) {
-    const size = sizeForAspect(v.baseW, v.baseH);
+  if (!omitSize) {
+    const size = sizeForAspect(v.baseW,v.baseH);
     if (size) payload.size = size;
-    payload.providerOptions = {
-      openai: { quality: v.quality, outputFormat: "jpeg", outputCompression: 90 }
-    };
   }
   return payload;
 }
@@ -133,11 +141,11 @@ async function loadPromptImages(v, fetcher) {
 
 // createGateway({apiKey})는 기존 Vercel OIDC/API Gateway 토큰을 그대로 사용한다.
 // 실제 이미지 생성은 generateImage()이며 입력 사진이 포함된 prompt를 전달한다.
-async function generateWithReferences(v, images, token, minimal, signal, sdk) {
+async function generateWithReferences(v, images, token, omitSize, signal, sdk) {
   const ai = sdk || await import("ai");
   const gateway = ai.createGateway({ apiKey: token });
   return ai.generateImage({
-    ...buildPayload(v, images, minimal),
+    ...buildPayload(v, images, omitSize),
     model: gateway.imageModel(MODEL),
     abortSignal: signal
   });
@@ -150,10 +158,10 @@ function sniffMime(b64) {
   return "image/jpeg";
 }
 
-// 크기·품질 같은 선택 항목을 Gateway 가 거부했을 때만 한 번 더 보낸다.
-function looksLikeParamError(status, text) {
+// 크기 오류에만 크기 제외 재시도. 최고(max) 등 품질 오류는 묵살하지 않는다.
+function looksLikeSizeError(status, text) {
   if (status !== 400 && status !== 422) return false;
-  return /size|quality|output_format|output_compression|unknown|unsupported|unrecognized|not allowed|invalid param/i.test(text || "");
+  return /\b(size|resolution|pixel budget|dimensions|width|height)\b/i.test(text || "");
 }
 
 function gatewayToken(req) {
@@ -219,7 +227,7 @@ async function handler(req, res) {
     });
   }
 
-  let result, minimal = false;
+  let result, sizeFallback = false;
   const ctl = new AbortController();
   const timer = setTimeout(function(){ ctl.abort(); }, UPSTREAM_TIMEOUT_MS);
   try {
@@ -228,9 +236,12 @@ async function handler(req, res) {
     } catch (e) {
       const status = Number(e && (e.statusCode || e.status) || 0);
       const reason = String(e && (e.responseBody || e.message) || e || "");
-      if (!looksLikeParamError(status, reason)) throw e;
-      console.warn("image-generate: optional params rejected; retry minimal", { status: status, reason: reason.slice(0, 220) });
-      minimal = true;
+      if (!looksLikeSizeError(status, reason)) throw e;
+      console.warn("image-generate: invalid size; retry without size but keep quality", {
+        status: status, size: sizeForAspect(v.baseW,v.baseH), quality: v.quality,
+        reason: reason.slice(0, 220)
+      });
+      sizeFallback = true;
       result = await generateWithReferences(v, images, token, true, ctl.signal);
     }
   } catch (e) {
@@ -261,7 +272,7 @@ async function handler(req, res) {
 
   console.log("image-generate ok", {
     model: MODEL, refs: v.refs.length, inputs: images.length,
-    quality: v.quality, minimal: minimal, ms: Date.now() - t0, b64: b64.length
+    quality: v.quality, sizeFallback: sizeFallback, ms: Date.now() - t0, b64: b64.length
   });
   return send(res, 200, {
     b64: b64,
@@ -269,9 +280,10 @@ async function handler(req, res) {
     model: MODEL,
     mode: "generate-with-references",
     input_images: images.length,
-    quality: minimal ? null : v.quality,
-    requested_size: minimal ? null : sizeForAspect(v.baseW, v.baseH),
-    minimal: minimal,
+    quality: v.quality,
+    requested_size: sizeFallback ? null : sizeForAspect(v.baseW, v.baseH),
+    size_fallback: sizeFallback,
+    minimal: sizeFallback, // legacy key: now means size-only retry
     ms: Date.now() - t0
   });
 }
@@ -281,6 +293,6 @@ module.exports._lib = {
   checkPath: checkPath, publicUrl: publicUrl, validate: validate, buildPayload: buildPayload,
   loadPromptImages: loadPromptImages, generateWithReferences: generateWithReferences,
   sizeForAspect: sizeForAspect, round16: round16,
-  sniffMime: sniffMime, looksLikeParamError: looksLikeParamError,
-  MODEL: MODEL, MAX_EDGE: MAX_EDGE, MAX_REFS: MAX_REFS,
+  sniffMime: sniffMime, looksLikeSizeError: looksLikeSizeError,
+  MODEL: MODEL, MAX_EDGE: MAX_EDGE, MIN_PIXELS: MIN_PIXELS, MAX_REFS: MAX_REFS,
 };

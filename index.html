@@ -2914,7 +2914,7 @@
     proj.edits[photoId]={
       id:up.id, w:fit.w, h:fit.h, size:up.sizeBytes, srcW:fit.srcW, srcH:fit.srcH,
       quality:j.quality||body.quality, refs:body.refs.length, at:Date.now(),
-      note: fit.note || (j.minimal ? "크기·품질 옵션 없이 만들어졌어요" : "")
+      note: [fit.note, j.size_fallback ? "크기만 자동 선택으로 재시도했어요. 품질 "+(j.quality||body.quality)+" 설정은 유지됐어요." : ""].filter(Boolean).join(" · ")
     };
     await persist(proj);
     if(old && old.id && old.id!==up.id){ try{ await storeDelete(old.id); }catch(e){} }
