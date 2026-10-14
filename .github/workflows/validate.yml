@@ -28,6 +28,13 @@ jobs:
           node --check api/image-edit.js
       - name: Test timeline and verify original scriptPrompt
         run: node --test tests/*.test.cjs
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Check and test Kling clip Edge Function (lodging-reels-clip)
+        run: |
+          deno check supabase/functions/lodging-reels-clip/clip.ts
+          deno test --no-check tests/clip-function.test.ts
       - name: Check SoundTouch audio processing CDN assets
         run: |
           curl --fail --location --silent --show-error --head --retry 2 'https://esm.sh/@soundtouchjs/audio-worklet@2.1.1'

@@ -136,6 +136,23 @@
   .eimg i{position:absolute; left:2px; top:2px; font-style:normal; font-size:10px;
     font-weight:700; color:#fff; background:rgba(0,0,0,.7); border-radius:4px; padding:0 4px}
   .earrow{color:var(--mute); font-size:14px}
+  /* ⑨ 영상화: 원본 → 가공 → 영상 세 칸 */
+  .eimg video{width:100%; height:100%; object-fit:contain; display:block; background:#000; cursor:pointer}
+  .eimg .vopen{position:absolute; right:2px; bottom:2px; font-size:10px; font-weight:700; color:#fff;
+    background:rgba(0,0,0,.72); border-radius:4px; padding:1px 4px; text-decoration:none}
+  .eimg.wait{border-style:dashed}
+  .eimg.wait span{font-size:11px; color:var(--accent); text-align:center; padding:0 4px; word-break:keep-all;
+    font-variant-numeric:tabular-nums}
+  .elab{display:block; font-size:12px; font-weight:700; color:var(--mute); margin:0 0 4px}
+  .eclip{margin-top:12px; padding-top:10px; border-top:1px dashed var(--line)}
+  .vdur{display:flex; align-items:center; gap:8px; margin-top:6px}
+  .vdur label{display:inline; margin:0; font-size:13px; font-weight:600}
+  .vdur input{width:72px; flex:0 0 72px; padding:9px 8px; font:inherit; font-size:15.5px; color:var(--ink);
+    background:var(--field); border:1px solid var(--line); border-radius:10px; outline:none;
+    text-align:center; font-variant-numeric:tabular-nums}
+  .vdur input:focus{border-color:var(--accent)}
+  .vdur input.bad{border-color:var(--warn); color:var(--warn)}
+  .vdur span{font-size:12.5px; color:var(--mute)}
   .eside{flex:1 1 180px; min-width:0}
   .ebtns{display:flex; gap:6px; margin-top:6px}
   .eside textarea{min-height:64px; font-size:14.5px}
@@ -274,7 +291,10 @@
     ai:  SUPA.url + "/functions/v1/lodging-reels-ai",
     tts: SUPA.url + "/functions/v1/lodging-reels-tts",
     // Supabase 가 아니라 이 Vercel 프로젝트의 함수다. OIDC 로 키 없이 AI Gateway 에 붙는다.
-    image: "/api/image-edit"
+    image: "/api/image-edit",
+    // ⑨ 영상화. Kling API 를 직접 부르는 Supabase 함수(KLINGAI_API_KEY 는 Secret 에만 있다).
+    // start 로 작업을 걸고 status 로 확인한다.
+    clip: SUPA.url + "/functions/v1/lodging-reels-clip"
   };
 
   var session=null, uid=null, local=false;
@@ -528,6 +548,8 @@
         v.edits=Object.assign({}, v.edits||{});
         v.editNotes=Object.assign({}, v.editNotes||{});
         v.editSpecs=JSON.parse(JSON.stringify(v.editSpecs||{}));
+        v.clips=Object.assign({}, v.clips||{});
+        v.clipJobs=JSON.parse(JSON.stringify(v.clipJobs||{}));
         return v;
       });
       local=false;
@@ -554,6 +576,7 @@
   async function removeProject(p){
     var ids=(p.photos||[]).concat(p.infos||[]).concat(p.refs||[]).map(function(x){return x.id});
     Object.keys(p.edits||{}).forEach(function(k){ var e=p.edits[k]; if(e && e.id) ids.push(e.id); });
+    Object.keys(p.clips||{}).forEach(function(k){ var c=p.clips[k]; if(c && c.id) ids.push(c.id); });
     Object.keys(p.editSpecs||{}).forEach(function(k){
       ((p.editSpecs[k]||{}).refs||[]).forEach(function(r){ if(r && r.id) ids.push(r.id); });
     });
@@ -673,14 +696,19 @@
     current[key].splice(idx,1);
     var ed = (kind==="photo" && it && current.edits) ? current.edits[it.id] : null;
     var sp = (kind==="photo" && it && current.editSpecs) ? current.editSpecs[it.id] : null;
+    var cl = (kind==="photo" && it && current.clips) ? current.clips[it.id] : null;
     if(kind==="photo" && it){
       if(current.edits) delete current.edits[it.id];
       if(current.editSpecs) delete current.editSpecs[it.id];
       if(current.editNotes) delete current.editNotes[it.id];
+      if(current.clips) delete current.clips[it.id];
+      // 진행 중인 영상 작업은 결과를 받지 않는다(Kling 쪽 작업은 취소되지 않는다).
+      if(current.clipJobs) delete current.clipJobs[it.id];
     }
     await persist(current);
     if(it){ try{ await storeDelete(it.id); }catch(e){} }
     if(ed && ed.id){ try{ await storeDelete(ed.id); }catch(e){} }
+    if(cl && cl.id){ try{ await storeDelete(cl.id); }catch(e){} }
     if(sp && sp.refs){ for(var q=0;q<sp.refs.length;q++){ try{ await storeDelete(sp.refs[q].id); }catch(e){} } }
     renderEdit(current);
   }
@@ -2688,15 +2716,27 @@
   // ⑧ 사진 한 장 한 장에 그 사진만의 프롬프트와 레퍼런스를 붙여 GPT Image 2.5 Sunburst 로
   // 원본 사진의 가로세로 비율로 생성한다. 공통 프롬프트나 공통 레퍼런스는 없다.
   // 결과가 있는 사진은 ⑩ 컷 배치와 ⑪ 영상에서 결과로 바뀐다. 결과를 지우면 원본으로 돌아간다.
+  // 가공 사진이 생기면 같은 줄에서 Kling 3.0 Pro(Omni) 로 9:16 영상(클립)도 만들 수 있다.
+  // 클립은 아직 ⑩·⑪ 릴스 조립에 쓰이지 않는다.
   //
   // 저장 구조
-  //   current.editSpecs[사진id] = { prompt:"...", refs:[{id,w,h,size}] }   ← 사진별 입력
+  //   current.editSpecs[사진id] = { prompt:"...", refs:[{id,w,h,size}], vprompt:"...", vdur:"5" }  ← 사진별 입력
   //   current.edits[사진id]     = { id, w, h, ... }                        ← 사진별 결과
+  //   current.clips[사진id]     = { id, size, dur, fromEdit, inputs, at }  ← 사진별 영상
+  //   current.clipJobs[사진id]  = { op, at, dur, fromEdit, inputs }        ← 만드는 중인 영상 작업
   var EDIT = {
     maxRefs:15,
     qualities:[["medium","보통 · 빠름"],["high","높음 · 기본"],["xhigh","아주 높음 · 느림"],["max","최고 · 가장 느림"]]
   };
   var editBusy=false, editTimer=null;
+  // Kling 3.0 Pro(Omni) 레퍼런스 영상. 이미지는 최대 7장(Kling Omni 한도):
+  // 가공 사진(image_1) → 원본(image_2) → 이 사진의 레퍼런스(image_3~7).
+  // 함수 쪽 한도(supabase/functions/lodging-reels-clip/clip.ts)와 같아야 한다.
+  var CLIP = {
+    maxInputs:7, maxPrompt:2500, minDur:3, maxDur:15, dur:5, minSide:300, maxRatio:2.5,
+    pollMs:8000, giveUpMs:40*60*1000, maxMisses:15
+  };
+  var clipPollTimer=null, clipClock=null, clipInflight={}, clipErrors={}, clipMisses={};
 
   // ⑩·⑪ 이 쓸 실제 이미지. 가공본이 있으면 그걸, 없으면 원본.
   function srcId(p){
@@ -2708,16 +2748,16 @@
   // 공통 프롬프트 시절(editPrompt + editNotes)에 적어 둔 글이 있으면 그 사진의 프롬프트로 이어 받는다.
   function peekSpec(proj, pid){
     var sp=(proj.editSpecs||{})[pid];
-    if(sp) return {prompt:sp.prompt||"", refs:sp.refs||[]};
+    if(sp) return {prompt:sp.prompt||"", refs:sp.refs||[], vprompt:sp.vprompt||"", vdur:sp.vdur==null?"":String(sp.vdur)};
     var legacy=[(proj.editPrompt||"").trim(), ((proj.editNotes||{})[pid]||"").trim()].filter(Boolean).join("\n");
-    return {prompt:legacy, refs:[]};
+    return {prompt:legacy, refs:[], vprompt:"", vdur:""};
   }
   // 쓰기용. 없으면 만들어서 프로젝트에 붙인다.
   function specOf(proj, pid){
     proj.editSpecs=proj.editSpecs||{};
     if(!proj.editSpecs[pid]){
       var seed=peekSpec(proj, pid);
-      proj.editSpecs[pid]={prompt:seed.prompt, refs:seed.refs.slice()};
+      proj.editSpecs[pid]={prompt:seed.prompt, refs:seed.refs.slice(), vprompt:seed.vprompt, vdur:seed.vdur};
     }
     return proj.editSpecs[pid];
   }
@@ -2783,6 +2823,284 @@
     return any ? '프롬프트 적은 사진은 모두 만들었어요' : '프롬프트를 적은 사진이 없어요';
   }
 
+  // ---------- ⑨ 영상화 (Kling 3.0 Pro · Omni) ----------
+  // Kling Omni 는 프롬프트에서 이미지를 <<<image_N>>> 로 가리킨다. 번호는 보내는 순서다:
+  // image_1 가공 사진, image_2 원본, image_3~ 이 사진의 레퍼런스.
+  function clipHead(proj, refCount){
+    var h="Create a vertical 9:16 photorealistic short-form video that brings the scene in <<<image_1>>> to life."+
+      " <<<image_2>>> is the original photo of the real accommodation.";
+    if(proj.editKeepReal!==false){
+      h+=" Keep the accommodation's actual architecture, furniture, windows and layout as in <<<image_2>>>;"+
+         " do not add rooms or facilities that are not there.";
+    }
+    if(refCount===1) h+=" <<<image_3>>> is an additional reference.";
+    else if(refCount>1) h+=" <<<image_3>>> to <<<image_"+(refCount+2)+">>> are additional references.";
+    if(refCount) h+=" Use the additional references for people, appearance, props, style or atmosphere as described below.";
+    return h;
+  }
+  function clipPromptText(proj, pid){
+    var n=Math.max(0, clipInputs(proj, pid).length-2);
+    return clipHead(proj, n)+"\n\n"+peekSpec(proj, pid).vprompt.trim();
+  }
+  // 영상 레퍼런스: 가공 사진 → 원본 → 이 사진의 레퍼런스. 합쳐서 최대 7장(Kling Omni 한도).
+  function clipInputs(proj, pid){
+    var e=(proj.edits||{})[pid];
+    if(!e || !e.id) return [];
+    var refs=peekSpec(proj, pid).refs.map(function(r){ return r.id; });
+    return [e.id, pid].concat(refs).slice(0, CLIP.maxInputs);
+  }
+  function clipInputsHint(proj, pid){
+    var n=peekSpec(proj, pid).refs.length, used=Math.min(n, CLIP.maxInputs-2);
+    var t="영상 레퍼런스: 가공 · 원본"+(used ? " · 레퍼런스 "+(used===1 ? "1번" : "1~"+used+"번") : "");
+    if(n>used) t+=" (Kling 한도가 "+CLIP.maxInputs+"장이라 레퍼런스 "+(used+1)+"번부터는 빠져요)";
+    return t;
+  }
+  // Kling 이미지 조건: 가로·세로 300px 이상, 비율 1:2.5 ~ 2.5:1. 크기를 아는 것만 미리 본다.
+  function clipInputProblem(proj, pid){
+    var e=(proj.edits||{})[pid] || {}, ph=(proj.photos||[]).find(function(x){ return x.id===pid; }) || {};
+    var refs=peekSpec(proj, pid).refs.slice(0, Math.max(0, CLIP.maxInputs-2));
+    var list=[["가공 사진", e]].concat([["원본", ph]]).concat(refs.map(function(r,j){ return ["레퍼런스 "+(j+1)+"번", r]; }));
+    for(var k=0;k<list.length;k++){
+      var w=+list[k][1].w||0, h=+list[k][1].h||0;
+      if(!(w>0 && h>0)) continue;
+      if(Math.min(w,h)<CLIP.minSide) return list[k][0]+"이 너무 작아요 ("+w+"×"+h+"). Kling 은 가로·세로 "+CLIP.minSide+"px 이상만 받아요.";
+      if(Math.max(w,h)/Math.min(w,h)>CLIP.maxRatio) return list[k][0]+" 비율이 너무 길어요 ("+w+"×"+h+"). Kling 은 1:2.5 ~ 2.5:1 까지만 받아요.";
+    }
+    return "";
+  }
+  // 영상 길이는 사진마다 키보드로 적는다. 비우면 5초. 3~15 정수가 아니면 null(만들기 전에 막는다).
+  function clipDuration(proj, pid){
+    var raw=String(peekSpec(proj, pid).vdur||"").trim();
+    if(!raw) return CLIP.dur;
+    if(!/^\d+$/.test(raw)) return null;
+    var d=+raw;
+    return d>=CLIP.minDur && d<=CLIP.maxDur ? d : null;
+  }
+  // 함수로 보낼 start 요청. 가공 사진이나 영상화 프롬프트가 없으면 만들지 않는다.
+  function clipRequest(proj, pid){
+    var e=(proj.edits||{})[pid];
+    if(!e || !e.id || !peekSpec(proj, pid).vprompt.trim()) return null;
+    var inputs=clipInputs(proj, pid);
+    return {
+      action:"start", projectId:proj.id,
+      edited:inputs[0], original:inputs[1], refs:inputs.slice(2),
+      prompt:clipPromptText(proj, pid), duration:clipDuration(proj, pid)
+    };
+  }
+  // 줄마다 보여 줄 상태.
+  function clipState(proj, pid){
+    var job=(proj.clipJobs||{})[pid], c=(proj.clips||{})[pid], e=(proj.edits||{})[pid];
+    return {
+      job:job||null, clip:c||null,
+      // 영상을 만든 뒤 가공 사진을 다시 만들었거나 지웠으면 영상은 옛 사진 기준이다.
+      stale:!!(c && (!e || e.id!==c.fromEdit)),
+      canMake:!!(e && e.id) && !job
+    };
+  }
+  function clipElapsed(job){
+    var s=Math.max(0, Math.round((Date.now()-((job && job.at) || Date.now()))/1000));
+    return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
+  }
+  function clipJobIds(proj){ return Object.keys((proj && proj.clipJobs) || {}); }
+
+  // 한 줄의 영상화 칸: 프롬프트 · 레퍼런스 안내 · 영상 만들기/지우기.
+  function clipControls(p, i, sp, cs){
+    var hasEdit=!!((current.edits||{})[p.id]);
+    var h='<div class="eclip">'+
+      '<label class="elab" for="vp_'+i+'">영상화</label>'+
+      '<textarea id="vp_'+i+'" data-vprompt="'+esc(p.id)+'" placeholder="'+(i+1)+'번 가공 사진이 어떻게 움직일지 적어주세요">'+esc(sp.vprompt)+'</textarea>'+
+      '<div class="vdur"><label for="vd_'+i+'">영상 길이</label>'+
+        '<input id="vd_'+i+'" data-vdur="'+esc(p.id)+'" type="number" inputmode="numeric" min="'+CLIP.minDur+'" max="'+CLIP.maxDur+'" step="1" '+
+        'placeholder="'+CLIP.dur+'" value="'+esc(sp.vdur)+'"'+(clipDuration(current, p.id)===null ? ' class="bad"' : '')+'>'+
+        '<span>초 ('+CLIP.minDur+'~'+CLIP.maxDur+', 비우면 '+CLIP.dur+')</span></div>'+
+      '<p class="hint">'+esc(hasEdit ? clipInputsHint(current, p.id) : "가공 사진을 만들면 영상을 만들 수 있어요.")+'</p>'+
+      '<div class="ebtns">'+
+        '<button type="button" data-clip="'+i+'"'+(cs.canMake && !editBusy ? '' : ' disabled')+'>'+
+          (cs.job ? '영상 만드는 중' : cs.clip ? '영상 다시 만들기' : '영상 만들기')+'</button>'+
+        (cs.job ? '<button type="button" class="ghost" data-clipstop="'+i+'">기다리기 그만</button>'
+          : cs.clip ? '<button type="button" class="ghost" data-unclip="'+i+'"'+(editBusy ? ' disabled' : '')+'>영상 지우기</button>' : '')+
+      '</div>';
+    if(cs.clip){
+      var c=cs.clip, meta=[(c.dur||CLIP.dur)+"초 · 9:16"];
+      if(c.size) meta.push((c.size/1048576).toFixed(1)+"MB");
+      if(c.ms) meta.push("만드는 데 "+clipElapsed({at:Date.now()-c.ms}));
+      h+='<p class="hint">'+esc(meta.join(" · "))+'</p>';
+    }
+    if(cs.stale) h+='<p class="hint">가공 사진이 바뀌었어요. 이 영상은 이전 사진으로 만든 거예요.</p>';
+    if(clipErrors[p.id]) h+='<p class="status bad">'+esc(clipErrors[p.id])+'</p>';
+    return h+'</div>';
+  }
+
+  // 프롬프트를 적는 중이면 커서가 날아가지 않게, 칸에서 나올 때 다시 그린다.
+  function renderClipsSoon(proj){
+    if(current!==proj) return;
+    var a=document.activeElement;
+    if(a && view.contains(a) && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName)){
+      if(!a._clipRerender){
+        a._clipRerender=true;
+        a.addEventListener("blur",function(){
+          a._clipRerender=false;
+          setTimeout(function(){ if(current===proj) renderEdit(proj); },0);
+        },{once:true});
+      }
+      return;
+    }
+    renderEdit(proj);
+  }
+
+  // 작업만 걸고 바로 돌아온다. 결과는 clipCheck 가 몇 초마다 확인한다.
+  async function clipStart(proj, pid){
+    var idx=(proj.photos||[]).findIndex(function(x){ return x.id===pid; });
+    if(idx<0) return;
+    proj.clipJobs=proj.clipJobs||{};
+    if(proj.clipJobs[pid]) return;
+    var body=clipRequest(proj, pid);
+    if(!body){
+      clipErrors[pid]=(proj.edits||{})[pid] ? (idx+1)+"번 영상화 프롬프트를 먼저 적어주세요." : "가공 사진을 먼저 만들어주세요.";
+      renderClipsSoon(proj); return;
+    }
+    if(body.duration===null){
+      clipErrors[pid]=(idx+1)+"번 영상 길이는 "+CLIP.minDur+"~"+CLIP.maxDur+"초 사이 정수로 적어주세요.";
+      renderClipsSoon(proj); return;
+    }
+    var bad=clipInputProblem(proj, pid);
+    if(bad){ clipErrors[pid]=bad; renderClipsSoon(proj); return; }
+    if(body.prompt.length>CLIP.maxPrompt){
+      clipErrors[pid]="영상화 프롬프트가 너무 길어요 (앞 문장 포함 "+body.prompt.length+"자 / 최대 "+CLIP.maxPrompt+"자).";
+      renderClipsSoon(proj); return;
+    }
+    delete clipErrors[pid];
+    // 응답 오기 전에 버튼부터 잠근다. 두 번 눌러 요금이 두 번 나가지 않게.
+    var job={op:null, at:Date.now(), dur:body.duration, fromEdit:body.edited, inputs:2+body.refs.length};
+    proj.clipJobs[pid]=job;
+    renderClipsSoon(proj);
+    try{
+      var r=await api(FN.clip,{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      var t=await r.text(), j=null;
+      try{ j=JSON.parse(t); }catch(e){}
+      if(!r.ok || !j || j.operation==null){
+        var msg=(j && (j.message||j.error)) || t.slice(0,160) || ("HTTP "+r.status);
+        if(r.status===404) msg="영상 함수(lodging-reels-clip)가 아직 배포되지 않았어요.";
+        throw new Error(msg);
+      }
+      if(proj.clipJobs[pid]===job){
+        job.op=j.operation;
+        await persist(proj);
+        ensureClipPoll();
+      }
+    }catch(e){
+      if(proj.clipJobs[pid]===job) delete proj.clipJobs[pid];
+      clipErrors[pid]=(idx+1)+"번 영상 요청 실패: "+((e && e.message) || String(e));
+      console.error("clip start failed", e);
+    }
+    renderClipsSoon(proj);
+  }
+
+  function ensureClipPoll(){
+    if(!clipPollTimer) clipPollTimer=setTimeout(clipPollTick, CLIP.pollMs);
+    if(!clipClock) clipClock=setInterval(clipClockTick, 1000);
+  }
+  function clipClockTick(){
+    var ids=clipJobIds(current);
+    if(!ids.length){ clearInterval(clipClock); clipClock=null; return; }
+    ids.forEach(function(pid){
+      var el=view.querySelector('[data-cliptime="'+pid.replace(/"/g,'\\"')+'"]');
+      if(el) el.textContent=clipElapsed(current.clipJobs[pid]);
+    });
+  }
+  async function clipPollTick(){
+    clipPollTimer=null;
+    var proj=current;
+    if(!proj || !uid) return;
+    var ids=clipJobIds(proj);
+    if(!ids.length) return;
+    await Promise.all(ids.map(function(pid){ return clipCheck(proj, pid); }));
+    if(clipJobIds(current).length) ensureClipPoll();
+  }
+
+  async function clipCheck(proj, pid){
+    var job=(proj.clipJobs||{})[pid];
+    if(!job || clipInflight[pid]) return;
+    var idx=(proj.photos||[]).findIndex(function(x){ return x.id===pid; });
+    var name=(idx+1)+"번 영상";
+    var giveUp=async function(msg){
+      if((proj.clipJobs||{})[pid]===job) delete proj.clipJobs[pid];
+      clipErrors[pid]=msg;
+      await persist(proj);
+      renderClipsSoon(proj);
+    };
+    if(!job.op){
+      // 요청 도중 페이지를 닫아 작업 번호를 못 받은 경우
+      if(Date.now()-job.at>120000) await giveUp(name+" 요청이 중간에 끊겼어요. 다시 만들어주세요.");
+      return;
+    }
+    if(Date.now()-job.at>CLIP.giveUpMs){
+      await giveUp(name+"이 40분 넘게 안 끝나서 기다리기를 멈췄어요. 다시 만들어주세요.");
+      return;
+    }
+    clipInflight[pid]=true;
+    try{
+      var r=await api(FN.clip,{method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"status", projectId:proj.id, operation:job.op})});
+      var t=await r.text(), j=null;
+      try{ j=JSON.parse(t); }catch(e){}
+      if(!r.ok || !j || !j.status){
+        // 네트워크·5xx·429 는 다음 차례에 다시 본다. 4xx 이거나 너무 여러 번 연속이면 멈춘다.
+        clipMisses[pid]=(clipMisses[pid]||0)+1;
+        var hard=r.status>=400 && r.status<500 && r.status!==429;
+        if(hard || clipMisses[pid]>=CLIP.maxMisses){
+          await giveUp(name+" 확인 실패: "+((j && (j.message||j.error)) || t.slice(0,160) || ("HTTP "+r.status)));
+        }
+        return;
+      }
+      clipMisses[pid]=0;
+      if(j.status==="pending") return;
+      // 기다리는 사이에 사진을 지웠거나 '기다리기 그만'을 눌렀거나 새로 걸었으면 이 결과는 버린다.
+      if((proj.clipJobs||{})[pid]!==job){
+        if(j.status==="completed" && j.id && !Object.keys(proj.clips||{}).some(function(k){ return proj.clips[k].id===j.id; })){
+          try{ await storeDelete(j.id); }catch(e){}
+        }
+        return;
+      }
+      if(j.status==="completed" && j.id){
+        proj.clips=proj.clips||{};
+        var old=proj.clips[pid];
+        proj.clips[pid]={id:j.id, size:j.size||0, mime:j.mime||"video/mp4", dur:job.dur, fromEdit:job.fromEdit,
+          inputs:job.inputs, at:Date.now(), ms:Date.now()-job.at};
+        delete proj.clipJobs[pid];
+        delete clipErrors[pid];
+        await persist(proj);
+        if(old && old.id && old.id!==j.id){ try{ await storeDelete(old.id); }catch(e){} }
+        if(current===proj) toast(name+"이 완성됐어요");
+        renderClipsSoon(proj);
+      }else{
+        await giveUp(name+" 만들기 실패: "+(j.message || j.error || "알 수 없는 오류"));
+      }
+    }catch(e){
+      clipMisses[pid]=(clipMisses[pid]||0)+1;
+      console.error("clip status failed", e);
+    }finally{
+      delete clipInflight[pid];
+    }
+  }
+
+  async function dropClip(pid){
+    var c=(current.clips||{})[pid];
+    if(!c) return;
+    delete current.clips[pid];
+    await persist(current);
+    try{ await storeDelete(c.id); }catch(e){}
+    renderEdit(current);
+  }
+
+  // 결과만 안 받는다. 이미 걸린 작업은 Kling 쪽에서 계속 돌고 요금도 나간다.
+  async function stopClipJob(pid){
+    if(!(current.clipJobs||{})[pid]) return;
+    delete current.clipJobs[pid];
+    await persist(current);
+    renderEdit(current);
+  }
+
   function editSection(){
     var ph=current.photos||[], ed=current.edits||{};
     var h='<h2>⑨ 이미지 가공</h2><div class="card">';
@@ -2798,13 +3116,21 @@
        '카메라 각도·시점·화각은 프롬프트에 따라 변경할 수 있어요.</p>';
     h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">프롬프트 앞에 붙는 문장 보기</summary>'+
        '<pre id="editpreview" style="white-space:pre-wrap;font-size:12px;margin:8px 0 0">'+
-       esc(editHead(current, 0)+"\n\n(각 사진의 사용자 프롬프트가 이어서 붙어요. 해당 사진에 레퍼런스가 있으면 Image 2~N 설명 문장이 자동 추가돼요.)")+'</pre></details>';
+       esc(editHead(current, 0)+"\n\n(각 사진의 사용자 프롬프트가 이어서 붙어요. 해당 사진에 레퍼런스가 있으면 Image 2~N 설명 문장이 자동 추가돼요.)")+'</pre>'+
+       '<p class="hint" style="margin-top:10px">영상화 프롬프트 앞:</p>'+
+       '<pre id="clippreview" style="white-space:pre-wrap;font-size:12px;margin:4px 0 0">'+esc(clipHead(current, 0)+"\n\n(각 사진의 영상화 프롬프트가 이어서 붙어요. 레퍼런스가 있으면 <<<image_3>>>~ 설명 문장이 자동 추가돼요.)")+'</pre></details>';
 
     h+='<label for="f_editQuality">품질 <span>모든 사진 공통</span></label><select id="f_editQuality">'+
        EDIT.qualities.map(function(q){
          return '<option value="'+q[0]+'"'+(q[0]===(current.editQuality||"high")?' selected':'')+'>'+esc(q[1])+'</option>';
        }).join("")+'</select>';
     h+='<p class="hint">한 장씩 차례로 만들어서 시간이 걸려요. 품질을 올릴수록 느리고 비싸요.</p>';
+
+    h+='<p class="hint"><strong>영상화 · Kling 3.0 Pro · 9:16</strong><br>영상 길이는 줄마다 따로 적어요 ('+CLIP.minDur+'~'+CLIP.maxDur+'초, 비우면 '+CLIP.dur+'초). '+
+       '영상은 한 편에 몇 분씩 걸려요. 기다리는 동안 다른 작업을 해도 되고, 새로고침해도 이어서 기다려요. '+
+       '길수록 비싸요. 만든 영상은 아직 ⑩·⑪ 릴스에는 들어가지 않아요.</p>'+
+       '<p class="hint">영상화 프롬프트에서 '+esc("<<<image_1>>>")+' 가공 사진, '+esc("<<<image_2>>>")+' 원본, '+
+       esc("<<<image_3>>>")+'부터 그 사진의 레퍼런스를 가리킬 수 있어요.</p>';
 
     var pend=editPending(current).length;
     var dis=editBusy?' disabled':'';
@@ -2814,15 +3140,29 @@
 
     h+='<div>';
     ph.forEach(function(p,i){
-      var e=ed[p.id], sp=peekSpec(current, p.id);
+      var e=ed[p.id], sp=peekSpec(current, p.id), cs=clipState(current, p.id);
+      var vcell;
+      if(cs.job){
+        vcell='<div class="eimg wait"><span>만드는 중<br><b data-cliptime="'+esc(p.id)+'">'+clipElapsed(cs.job)+'</b></span></div>';
+      }else if(cs.clip){
+        var vurl=blobUrl(cs.clip.id);
+        // #t=0.1 : 모바일 사파리가 재생 전에도 첫 화면을 보여주게 한다.
+        vcell='<div class="eimg"><video src="'+esc(vurl)+'#t=0.1" muted loop playsinline preload="metadata" data-clipplay '+
+              'aria-label="'+(i+1)+'번 영상 재생"></video>'+
+              '<a class="vopen" href="'+esc(vurl)+'" target="_blank" rel="noopener" aria-label="'+(i+1)+'번 영상 크게 보기">↗</a></div>';
+      }else{
+        vcell='<div class="eimg empty"><span>'+(e?'영상 없음':'사진 먼저')+'</span></div>';
+      }
       h+='<div class="erow">'+
          '<div class="epair">'+
            '<div class="eimg">'+previewImg(blobUrl(p.id),(i+1)+"번 원본")+'<i>'+(i+1)+'</i></div>'+
            '<span class="earrow">→</span>'+
            '<div class="eimg'+(e?'':' empty')+'">'+(e?previewImg(blobUrl(e.id),(i+1)+"번 가공 결과"):'<span>아직 없음</span>')+'</div>'+
+           '<span class="earrow">→</span>'+vcell+
          '</div>'+
          '<div class="eside">'+
-           '<textarea data-eprompt="'+esc(p.id)+'" placeholder="'+(i+1)+'번 사진을 어떻게 바꿀지 적어주세요">'+esc(sp.prompt)+'</textarea>'+
+           '<label class="elab" for="ep_'+i+'">사진 가공</label>'+
+           '<textarea id="ep_'+i+'" data-eprompt="'+esc(p.id)+'" placeholder="'+(i+1)+'번 사진을 어떻게 바꿀지 적어주세요">'+esc(sp.prompt)+'</textarea>'+
            '<div class="erefs">';
       sp.refs.forEach(function(r,j){
         h+='<div class="eref">'+previewImg(blobUrl(r.id),(i+1)+"번 사진의 "+(j+1)+"번 레퍼런스")+
@@ -2838,6 +3178,7 @@
              (e?'<button type="button" class="ghost" data-unedit="'+i+'"'+dis+'>결과 지우기</button>':'')+
            '</div>'+
            (e && e.note ? '<p class="hint">'+esc(e.note)+'</p>' : '')+
+           clipControls(p, i, sp, cs)+
          '</div></div>';
     });
     h+='</div></div>';
@@ -3285,6 +3626,8 @@
       current.editKeepReal=ek.checked;
       var pv=document.getElementById("editpreview");
       if(pv) pv.textContent=editHead(current,0)+"\n\n(각 사진의 사용자 프롬프트가 이어서 붙어요. 해당 사진에 레퍼런스가 있으면 Image 2~N 설명 문장이 자동 추가돼요.)";
+      var cpv=document.getElementById("clippreview");
+      if(cpv) cpv.textContent=clipHead(current, 0)+"\n\n(각 사진의 영상화 프롬프트가 이어서 붙어요. 레퍼런스가 있으면 <<<image_3>>>~ 설명 문장이 자동 추가돼요.)";
       flushSave();
     });
     var eq=document.getElementById("f_editQuality");
@@ -3338,6 +3681,54 @@
       if(!confirm(ids.length+"장을 한 장씩 차례로 만들어요. 진행할까요?")) return;
       runEdits(ids);
     });
+
+    // ⑨ 영상화 — 사진별 영상화 프롬프트 · 영상 만들기/지우기
+    Array.prototype.forEach.call(view.querySelectorAll("[data-vdur]"),function(inp){
+      inp.addEventListener("input",function(){
+        specOf(current, inp.dataset.vdur).vdur=inp.value.trim();
+        delete clipErrors[inp.dataset.vdur];
+        inp.classList.toggle("bad", clipDuration(current, inp.dataset.vdur)===null);
+        autosave();
+      });
+      inp.addEventListener("blur",function(){ flushSave(); });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("[data-vprompt]"),function(ta){
+      ta.addEventListener("input",function(){
+        specOf(current, ta.dataset.vprompt).vprompt=ta.value;
+        autosave();
+      });
+      ta.addEventListener("blur",function(){ flushSave(); });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("[data-clip]"),function(b){
+      b.addEventListener("click",function(){
+        var i=+b.dataset.clip, p=(current.photos||[])[i];
+        if(!p) return;
+        if(!peekSpec(current, p.id).vprompt.trim()){
+          clipErrors[p.id]=(i+1)+"번 영상화 프롬프트를 먼저 적어주세요.";
+          renderEdit(current);
+          var ta=view.querySelector('[data-vprompt="'+p.id.replace(/"/g,'\\"')+'"]');
+          if(ta) ta.focus();
+          return;
+        }
+        clipStart(current, p.id);
+      });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("[data-unclip]"),function(b){
+      b.addEventListener("click",function(){
+        var p=(current.photos||[])[+b.dataset.unclip];
+        if(p && confirm("영상을 지울까요? 가공 사진은 그대로예요.")) dropClip(p.id);
+      });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("[data-clipstop]"),function(b){
+      b.addEventListener("click",function(){
+        var p=(current.photos||[])[+b.dataset.clipstop];
+        if(p && confirm("결과를 기다리지 않을까요?\n이미 걸린 작업은 Kling 쪽에서 계속 만들어지고 요금도 나가요.")) stopClipJob(p.id);
+      });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("video[data-clipplay]"),function(v){
+      v.addEventListener("click",function(){ if(v.paused) v.play().catch(function(){}); else v.pause(); });
+    });
+    if(clipJobIds(current).length) ensureClipPoll();
 
     var rm=document.getElementById("remap");
     if(rm) rm.addEventListener("click",function(){
@@ -3401,7 +3792,7 @@
       "③ 대본 만들기 → 가격 어필 방식 고르고 읽어보기\n"+
       "④~⑦ 오토태그 → 목소리 → 음성 보정 → 컷 싱크\n"+
       "⑧ 사진 올리기\n"+
-      "⑨ 사진 가공 (선택)\n"+
+      "⑨ 사진 가공 · 영상화 (선택)\n"+
       "⑩ 컷마다 사진 고르기\n"+
       "⑪ 영상 만들기\n\n"+
       "PC 로 가져가려면:\n"+
