@@ -149,7 +149,8 @@ test("statuses update in place for name or Kling polling without wiping whole ca
 
 test("main and project shared listings show both statuses",()=>{
   const main=grab("sharedManagementSection(){"),project=grab("sharedElementCard(el){");
-  assert.match(main,/elemStatusRows\(\{elements:\[\]\},el\)/);
-  assert.match(project,/elemStatusRows\(current,el\)/);
+  assert.match(main,/sharedRegistrationHtml\(el\)/);
+  assert.match(grab("sharedRegistrationHtml(el){"),/elemStatusRows\(\{elements:\[\]\},el\)/);
+  assert.match(project,/sharedRegistrationHtml\(el\)/);
   assert.match(html,/class="elem-statuses"/);
 });

@@ -35,7 +35,7 @@ const FNS=[
   "mentionWarnings(proj, pid, text, stage){","replaceMentions(proj, pid, text, stage, map){",
   "editRefPlan(proj, pid){",
   "renameMentions(proj, from, to){","elemUsage(proj, name){","elemRename(proj, key, name){",
-  "elemDelete(key){","klingElementDelete(elementId){","elemRegister(key){","elemCheck(proj, key){",
+  "elemPhotoLocked(el){","elemDelete(key){","klingElementDelete(elementId){","elemRegister(key){","elemCheck(proj, key){",
   "elemAddPhotos(files, key){","elemDropPhoto(key, idx){","elemPendingKeys(proj){",
   "mentionOptions(proj, pid, stage, q){","mentionQuery(text, caret){","mentionInsert(text, start, caret, label){",
 ];
@@ -46,7 +46,7 @@ function sandbox(proj, replies){
   const calls=[], deleted=[], persisted=[], toasts=[], confirms=[];
   let n=0;
   const sb={
-    current:proj, uid:UID, sharedElements:[], esc:(v)=>String(v??""), FN:{clip:FN_URL},
+    current:proj, uid:UID, sharedElements:[], elemPhotoBusy:{}, esc:(v)=>String(v??""), FN:{clip:FN_URL},
     api:async(url,opts)=>{
       calls.push({url,body:JSON.parse(opts.body)});
       const r=(replies||[]).shift() || {status:200,body:{ok:true}};
