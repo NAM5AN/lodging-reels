@@ -166,7 +166,8 @@ test("deleting a shared general element never calls Kling paid/delete endpoints"
   assert.deepEqual(clone(warnings),[]);
   assert.equal(t.ctx.sharedElements.length,0);
   assert.equal(t.ctx.sharedDeletedKeys[0],el.key);
-  assert.deepEqual(t.removed,[el.front.id]);
+  assert.ok(t.calls.some(x=>x.method==="DELETE" && x.url.includes(el.front.id)),
+    "stored common photo is removed through the authenticated storage API");
   assert.ok(!t.calls.some(x=>x.body?.action),"no Kling element ID means no Kling endpoint");
 });
 test("all inline scripts parse and existing features remain in the same page",()=>{
