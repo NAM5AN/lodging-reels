@@ -338,7 +338,8 @@
   var session=null, uid=null, local=false;
   var projects=[], current=null, usage=null;
   // Kling 고정 등록 완료 요소는 사용자 계정 전체에서 공유한다. 숙소별 요소와 DB·사진 경로를 분리.
-  var sharedElements=[], sharedLoaded=false, sharedLoadError="", sharedSyncBusy={};
+  var sharedElements=[], sharedDeletedKeys=[], sharedLoaded=false, sharedLoadError="", sharedSyncBusy={},
+      sharedManageBusy=false;
   var loadError=null, capNote="";
   var view=document.getElementById("view"), bar=document.getElementById("bar");
 
@@ -602,15 +603,19 @@
 
   // 별도 RLS 테이블. 등록한 요소는 다른 숙소/기기에서도 재업로드 없이 로드한다.
   async function loadSharedElements(){
-    if(!uid){ sharedElements=[]; sharedLoaded=false; return false; }
+    if(!uid){ sharedElements=[]; sharedDeletedKeys=[]; sharedLoaded=false; return false; }
     try{
       var r=await api(SUPA.url+"/rest/v1/"+SUPA.sharedTable+
         "?select=element_key,name,data,updated_at&owner=eq."+uid+"&order=updated_at.desc");
       if(!r.ok)throw new Error("HTTP "+r.status+" "+(await r.text()).slice(0,120));
       var rows=await r.json();
-      sharedElements=rows.map(function(row){
-        return Object.assign({},row.data||{},{key:row.element_key,name:row.name,scope:"global"});
-      }).filter(function(el){return el.kling && el.kling.status==="ready" && el.kling.elementId;});
+      // 삭제된 정식 요소는 재등록되지 않도록 계정에 삭제 표시만 남긴다.
+      sharedDeletedKeys=rows.filter(function(row){return row.data && row.data.deleted===true;})
+        .map(function(row){return row.element_key;});
+      sharedElements=rows.filter(function(row){return !(row.data && row.data.deleted===true);})
+        .map(function(row){return Object.assign({},row.data||{},
+          {key:row.element_key,name:row.name,scope:"global"});})
+        .filter(function(el){return el.kling && el.kling.status==="ready" && el.kling.elementId;});
       sharedLoaded=true;sharedLoadError="";
       return true;
     }catch(e){
@@ -644,6 +649,7 @@
     if(!proj||!el||!el.kling||el.kling.status!=="ready"||
        !el.kling.elementId||el.kling.sig!==elemSig(el)||!elemPhotos(el).length)return false;
     var key="shared_"+proj.id+"_"+el.key, existing=sharedElements.find(function(x){return x.key===key;});
+    if(sharedDeletedKeys.indexOf(key)>=0)return false; // 삭제한 요소를 옛 숙소에서 재발행하지 않음
     if(existing && String(existing.kling.elementId)===String(el.kling.elementId))return true;
     var conflict=sharedElements.find(function(x){return x.name===el.name && x.key!==key;});
     if(conflict)throw new Error("「"+el.name+"」 이름은 이미 다른 공통 요소에서 쓰고 있어요.");
@@ -662,7 +668,8 @@
         photos.push({id:up.id,w:ph.w,h:ph.h,size:up.sizeBytes});
       }
       var common={key:key,sourceKey:el.key,sourceProject:proj.id,scope:"global",
-        name:el.name,desc:el.desc||"",front:photos[0],angles:photos.slice(1),
+        name:existing ? existing.name : el.name,aliases:existing ? (existing.aliases||[]) : [],
+        desc:existing ? existing.desc : (el.desc||""),front:photos[0],angles:photos.slice(1),
         kling:{status:"ready",elementId:String(el.kling.elementId),
           sig:photos.map(function(x){return x.id}).join("|"),at:Date.now()}};
       await persistSharedElement(common);
@@ -1077,6 +1084,188 @@
     }
   }
 
+  // ---------- 계정 공통 Kling 정식 요소 라이브러리 (메인 페이지) ----------
+  // 저장된 사진은 Kling 에 이미 등록된 정체성의 일부다. 이름·설명만 바꿀 수 있으며
+  // 사진 변경은 숙소 ⑨에서 새로운 Kling 정식 등록을 해야 한다.
+  function sharedUsageSummary(el){
+    var aliases=[el.name].concat(el.aliases||[]), out=[];
+    projects.forEach(function(p){
+      var count=0;
+      Object.keys(p.editSpecs||{}).forEach(function(pid){
+        var sp=p.editSpecs[pid]||{}, used=["prompt","vprompt"].some(function(k){
+          return aliases.some(function(n){return n && String(sp[k]||"").indexOf("["+n+"]")>=0;});
+        });
+        if(used)count++;
+      });
+      if(count)out.push({id:p.id,name:p.name||p.folder||"이름 없는 숙소",cuts:count});
+    });
+    return out;
+  }
+  function sharedNameProblem(el, name){
+    // 모든 숙소에서 하나의 이름으로 검색하므로 모든 로컬 요소와의 충돌도 막는다.
+    var seen=projects.length ? projects : [{elements:[]}];
+    for(var i=0;i<seen.length;i++){
+      var problem=elemNameProblem(seen[i],name,el.key);
+      if(problem)return problem;
+    }
+    return "";
+  }
+  async function updateSharedMetadata(key, name, desc){
+    if(!sharedLoaded||!uid)throw new Error("계정 공통 요소를 불러오지 못했어요.");
+    var el=sharedElements.find(function(x){return x.key===key;});
+    if(!el)throw new Error("정식 요소가 없어요. 목록을 새로 불러와주세요.");
+    name=String(name||"").trim();desc=String(desc||"").trim();
+    var problem=sharedNameProblem(el,name);
+    if(problem)throw new Error(problem);
+    if(desc.length>ELEM.descMax)throw new Error("설명은 "+ELEM.descMax+"자까지예요.");
+    if(name===el.name&&desc===(el.desc||""))return false;
+    var aliases=(el.aliases||[]).slice();
+    // 예전 숙소에 저장돼 있는 [옛이름] 프롬프트도 깨지지 않도록 별칭을 유지.
+    if(el.name!==name&&aliases.indexOf(el.name)<0)aliases.push(el.name);
+    aliases=aliases.filter(function(n){return n!==name;});
+    await persistSharedElement(Object.assign({},el,{name:name,desc:desc,aliases:aliases}));
+    // Kling 의 외부 element_id와 등록 사진은 변경하지 않는다(추가 과금 없음).
+    return true;
+  }
+  function sharedDeletedLabel(){
+    // 삭제 기록의 DB 고유 이름은 예전 이름을 선점하지 않는다(새 등록에서 재사용 가능).
+    return "deleted_"+Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+  }
+  async function deleteSharedRegistered(key){
+    if(!sharedLoaded||!uid)throw new Error("계정 공통 요소를 불러오지 못했어요.");
+    var el=sharedElements.find(function(x){return x.key===key;});
+    if(!el)throw new Error("정식 요소를 찾지 못했어요. 다시 불러와주세요.");
+    if(sharedSyncBusy[key])throw new Error("아직 이 요소를 저장하는 중이에요. 잠시 후 다시 시도해주세요.");
+    var used=sharedUsageSummary(el);
+    if(used.length)throw new Error("현재 "+used.map(function(p){return p.name;}).join(" · ")+
+      " 숙소에서 사용 중이에요. 해당 숙소의 [요소이름] 프롬프트를 먼저 지운 뒤 삭제해주세요.");
+    // 외부 Kling 등록을 지우기 전에 DB 에 삭제 표식을 남겨 옛 숙소의 자동 재공유를 차단.
+    var record={owner:uid,element_key:key,name:sharedDeletedLabel(),
+      data:{deleted:true,at:Date.now(),sourceProject:el.sourceProject,sourceKey:el.sourceKey}};
+    var r=await api(SUPA.url+"/rest/v1/"+SUPA.sharedTable+"?on_conflict=owner,element_key",{
+      method:"POST",headers:{"Content-Type":"application/json",
+        Prefer:"resolution=merge-duplicates,return=minimal"},body:JSON.stringify(record)
+    });
+    if(!r.ok)throw new Error("공통 요소 삭제 기록을 저장하지 못했어요: "+(await r.text()).slice(0,140));
+    sharedElements=sharedElements.filter(function(x){return x.key!==key;});
+    if(sharedDeletedKeys.indexOf(key)<0)sharedDeletedKeys.push(key);
+    var warnings=[];
+    // 별도 공통 폴더 사진을 지운다. 원래 숙소의 사진은 건드리지 않는다.
+    for(var ph of elemPhotos(el)){
+      try{
+        var dr=await api(SUPA.url+"/storage/v1/object/"+SUPA.bucket+"/"+ph.id,{method:"DELETE"});
+        if(!dr.ok)warnings.push("공통 사진 일부 삭제 실패");
+      }catch(e){warnings.push("공통 사진 일부 삭제 실패");}
+    }
+    var elementId=el.kling && el.kling.elementId;
+    if(elementId && !sharedElements.some(function(x){
+      return x.kling && String(x.kling.elementId)===String(elementId);
+    })){
+      try{
+        var kr=await api(FN.clip,{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({action:"element_delete",elementId:String(elementId)})});
+        if(!kr.ok)warnings.push("Kling 서버 삭제 실패 (정식 ID가 남아 있을 수 있어요)");
+      }catch(e){warnings.push("Kling 서버 삭제 실패 (정식 ID가 남아 있을 수 있어요)");}
+    }
+    return warnings;
+  }
+
+  // 사진 확대는 기존 공통 라이트박스를 재사용한다.
+  function sharedManagementSection(){
+    var all=sharedElements||[];
+    var h='<h2>계정 공통 요소 관리 <small style="font-size:13px;color:var(--mute)">Kling 정식 등록 '+all.length+'개</small></h2>'+
+      '<div class="card" id="sharedLibrary">'+
+      '<p class="hint" style="margin:0 0 10px">⑨에서 Kling 정식 등록이 완료된 요소만 표시해요. '+
+      '모든 숙소에서 같은 요소를 사용하며, 이름·설명 수정은 Kling 재등록이나 추가 생성 요금 없이 반영돼요.</p>';
+    if(sharedLoadError)h+='<p class="status bad">'+esc(sharedLoadError)+'</p>';
+    if(!sharedLoaded)h+='<p class="hint">공통 요소를 불러오는 중이에요. 다시 불러오기를 눌러주세요.</p>';
+    else if(!all.length)h+='<p class="hint">아직 정식 등록된 공통 요소가 없어요. 숙소 ⑨에서 Kling 등록을 완료하면 여기에 자동으로 나타나요.</p>';
+    all.forEach(function(el){
+      var key=esc(el.key),photos=elemPhotos(el),used=sharedUsageSummary(el);
+      h+='<div class="elem shared-entry" data-shared-entry="'+key+'">'+
+        '<b>'+esc(el.name)+'</b>'+
+        '<p class="hint" style="margin:4px 0">Kling 정식 등록 완료 · ID '+esc(el.kling.elementId)+
+        (used.length?' · 사용 중인 숙소 '+used.length+'곳':' · 현재 사용 중인 숙소 없음')+'</p>'+
+        '<div class="elem-ph">';
+      photos.forEach(function(photo,j){
+        h+='<div class="eref" style="width:64px;height:72px">'+
+          previewImg(blobUrl(photo.id),el.name+(j?' 다른 각도 '+j:' 기준 사진'))+
+          '<i>'+(j?"각도 "+j:"기준")+'</i></div>';
+      });
+      h+='</div>'+
+        (el.desc?'<p class="hint" style="margin:6px 0">'+esc(el.desc)+'</p>':'')+
+        '<details style="margin:8px 0" data-shared-editor="'+key+'">'+
+          '<summary style="cursor:pointer;font-size:13px;font-weight:600">이름·설명 수정</summary>'+
+          '<div class="elem-f"><input class="nm" data-shared-name="'+key+'" maxlength="'+ELEM.nameMax+
+            '" value="'+esc(el.name)+'" aria-label="공통 요소 이름">'+
+          '<input data-shared-desc="'+key+'" maxlength="'+ELEM.descMax+
+            '" value="'+esc(el.desc||"")+'" placeholder="설명 (선택)" aria-label="공통 요소 설명"></div>'+
+          '<p class="hint">기존 숙소의 [옛이름] 호출도 유지돼요. Kling ID·등록 사진은 변경되지 않아요.</p>'+
+          '<button type="button" data-shared-save="'+key+'">수정 저장</button>'+
+        '</details>'+
+        '<div class="elem-k"><button type="button" class="ghost danger" data-shared-delete="'+key+
+          '"'+(used.length?' disabled title="사용 중인 숙소의 프롬프트를 먼저 지워주세요"':'')+
+          '>정식 요소 삭제</button>'+
+          (used.length?'<span class="st">사용 중이므로 삭제하려면 먼저 숙소 프롬프트에서 제거해야 해요.</span>':'')+
+        '</div><p class="status" data-shared-status="'+key+'"></p></div>';
+    });
+    h+='<button type="button" class="ghost" id="refreshshared" style="width:100%;margin-top:8px">공통 요소 새로고침</button></div>';
+    return h;
+  }
+  function bindSharedManagement(){
+    var refresh=document.getElementById("refreshshared");
+    if(refresh)refresh.addEventListener("click",async function(){
+      if(sharedManageBusy)return;
+      sharedManageBusy=true;refresh.disabled=true;
+      try{await loadSharedElements();renderList();}
+      finally{sharedManageBusy=false;}
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("[data-shared-save]"),function(btn){
+      btn.addEventListener("click",async function(){
+        if(sharedManageBusy)return;
+        var key=btn.dataset.sharedSave,entry=btn.closest("[data-shared-entry]");
+        var name=entry.querySelector("[data-shared-name]").value;
+        var desc=entry.querySelector("[data-shared-desc]").value;
+        var status=entry.querySelector("[data-shared-status]");
+        sharedManageBusy=true;btn.disabled=true;
+        try{
+          var changed=await updateSharedMetadata(key,name,desc);
+          renderList();
+          toast(changed?"공통 요소 이름·설명을 저장했어요":"변경된 내용이 없어요");
+        }catch(e){
+          if(status){status.textContent=(e&&e.message)||"요소 수정 실패";status.className="status bad";}
+          btn.disabled=false;
+        }finally{sharedManageBusy=false;}
+      });
+    });
+    Array.prototype.forEach.call(view.querySelectorAll("[data-shared-delete]"),function(btn){
+      btn.addEventListener("click",async function(){
+        if(sharedManageBusy)return;
+        var key=btn.dataset.sharedDelete,el=sharedElements.find(function(x){return x.key===key;});
+        if(!el)return;
+        var msg="「"+el.name+"」 정식 Kling 요소를 계정 전체에서 삭제할까요?\n"+
+          "모든 숙소에서 사라지고 Kling 서버 등록과 공통 사진도 삭제돼요.\n"+
+          "복구할 수 없으며 나중에 다시 등록하면 요금이 발생할 수 있어요.";
+        if(!confirm(msg))return;
+        var status=btn.closest("[data-shared-entry]").querySelector("[data-shared-status]");
+        sharedManageBusy=true;btn.disabled=true;
+        try{
+          var warnings=await deleteSharedRegistered(key);
+          renderList();
+          toast(warnings.length?"공통 요소는 삭제했지만 일부 정리 실패가 있어요":"정식 요소를 삭제했어요");
+          if(warnings.length){
+            var lib=document.getElementById("sharedLibrary");
+            if(lib)lib.insertAdjacentHTML("afterbegin",'<p class="status bad">'+
+              esc(Array.from(new Set(warnings)).join(" · "))+'</p>');
+          }
+        }catch(e){
+          if(status){status.textContent=(e&&e.message)||"요소 삭제 실패";status.className="status bad";}
+          btn.disabled=false;
+        }finally{sharedManageBusy=false;}
+      });
+    });
+  }
+
   // ---------- 목록 ----------
   function renderList(){
     current=null;
@@ -1092,7 +1281,7 @@
            (ni?' · 캡처 '+ni+'장':'')+'</p></div>';
       });
     }
-    h=fontSection()+h;
+    h=fontSection()+sharedManagementSection()+h;
     h+='<p class="status '+(local?"bad":"")+'" id="st"></p>';
     h+='<p class="status" id="diag"></p>';
     h+='<button type="button" id="reload" style="width:100%;margin-top:8px">다시 불러오기</button>';
@@ -1103,6 +1292,7 @@
          '<div class="meter"><i style="width:'+pct+'%"></i></div></div>';
     }
     view.innerHTML=h;
+    bindSharedManagement();
     document.getElementById("st").textContent = local
       ? "불러오지 못했어요. 다시 불러오기를 눌러보세요."
       : "계정에 저장돼요. 폰과 PC가 같이 보여요.";
@@ -3231,16 +3421,23 @@
   // 등록 완료된 공통 요소가 우선한다. 최초 등록한 숙소의 기존 사본은 중복 표시하지 않는다.
   function elemList(proj){
     var globals=typeof sharedElements==="undefined" ? [] : sharedElements;
+    var deleted=typeof sharedDeletedKeys==="undefined" ? [] : sharedDeletedKeys;
     var locals=(proj && proj.elements)||[];
     return globals.concat(locals.filter(function(el){
+      // 원래 숙소에 남은 사본은 공통 요소를 삭제해도 재사용·재등록되지 않도록 숨긴다.
+      if(proj && deleted.indexOf("shared_"+proj.id+"_"+el.key)>=0)return false;
       return !globals.some(function(g){
-        return (g.sourceProject===proj.id && g.sourceKey===el.key) ||
+        return (proj && g.sourceProject===proj.id && g.sourceKey===el.key) ||
           (el.name && g.name===el.name);
       });
     }));
   }
   function elemByKey(proj, key){ return elemList(proj).find(function(x){ return x.key===key; }) || null; }
-  function elemByName(proj, name){ return elemList(proj).find(function(x){ return x.name && x.name===name; }) || null; }
+  function elemByName(proj, name){
+    var all=elemList(proj);
+    return all.find(function(x){return x.name && x.name===name;}) ||
+      all.find(function(x){return x.scope==="global" && (x.aliases||[]).indexOf(name)>=0;}) || null;
+  }
   function elemPhotos(el){ return [el.front].concat(el.angles||[]).filter(function(x){ return x && x.id; }); }
   // 등록 당시 사진 묶음. 사진이 바뀌면 Kling 요소는 다시 등록해야 한다.
   function elemSig(el){ return elemPhotos(el).map(function(x){ return x.id; }).join("|"); }
@@ -3252,7 +3449,9 @@
     if(/[\[\]@\n]/.test(name)) return "이름에 [ ] @ 는 쓸 수 없어요.";
     if(/^(원본|가공|삭제됨|레퍼런스\s*\d+)$/.test(name)) return "「"+name+"」 — 미리 정해진 이름이라 쓸 수 없어요.";
     var hit=elemList(proj).find(function(x){
-      return x.key!==selfKey && x.name && (x.name.indexOf(name)>=0 || name.indexOf(x.name)>=0);
+      return x.key!==selfKey && [x.name].concat(x.aliases||[]).some(function(candidate){
+        return candidate && (candidate.indexOf(name)>=0 || name.indexOf(candidate)>=0);
+      });
     });
     if(hit) return hit.name===name ? "같은 이름의 요소가 있어요." : "「"+hit.name+"」 — 이름이 서로 겹쳐요. 포함되지 않게 지어주세요.";
     return "";
@@ -3830,7 +4029,9 @@
     await persist(current);
     elemPhotos(el).forEach(function(x){ storeDelete(x.id).catch(function(){}); });
     // Kling 쪽 등록도 지운다. 실패해도 화면 쪽 삭제는 그대로다.
-    if(el.kling && el.kling.elementId) klingElementDelete(el.kling.elementId);
+    if(el.kling && el.kling.elementId &&
+       !sharedElements.some(function(g){return g.kling && String(g.kling.elementId)===String(el.kling.elementId);}))
+      klingElementDelete(el.kling.elementId);
     renderEdit(current);
   }
   function klingElementDelete(elementId){
@@ -5061,7 +5262,10 @@
     renderList();
     document.getElementById("where").textContent="계정 저장";
     // 예전에 숙소별로 등록해 둔 정식 요소도 새 Kling 호출 없이 계정 공통 목록으로 옮긴다.
-    syncExistingSharedElements().catch(function(e){console.warn("공통 요소 동기화 실패",e);});
+    syncExistingSharedElements().then(function(){
+      // 로그인할 때 예전 프로젝트의 정식 요소를 이전했다면 메인 목록도 즉시 갱신.
+      if(!current)renderList();
+    }).catch(function(e){console.warn("공통 요소 동기화 실패",e);});
   }
 
   (async function init(){
