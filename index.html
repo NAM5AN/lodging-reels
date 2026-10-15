@@ -4837,7 +4837,7 @@
   //                         kling:{ status:"pending"|"ready"|"failed", taskId, elementId, sig, at, msg } }]
   var ELEM = { nameMax:20, descMax:100, maxAngles:3, minSide:300, maxRatio:2.5, giveUpMs:30*60*1000 };
   // elemDrafts: 규칙에 안 맞아 반영하지 못한 이름(칸에 그대로 남겨 고치게 한다). 저장하지 않는다.
-  var elemInflight={}, elemErrors={}, elemDrafts={};
+  var elemInflight={}, elemErrors={}, elemDrafts={}, elemMisses={};
 
   // 등록 완료된 공통 요소가 우선한다. 최초 등록한 숙소의 기존 사본은 중복 표시하지 않는다.
   function elemList(proj){
@@ -4862,6 +4862,35 @@
   function elemPhotos(el){ return [el.front].concat(el.angles||[]).filter(function(x){ return x && x.id; }); }
   // 등록 당시 사진 묶음. 사진이 바뀌면 Kling 요소는 다시 등록해야 한다.
   function elemSig(el){ return elemPhotos(el).map(function(x){ return x.id; }).join("|"); }
+  // Kling 등록은 결제 가능한 비동기 작업. 완료 여부가 불분명하면 작업 ID를 보존한다.
+  function elemTaskId(k){return k && k.taskId ? String(k.taskId) : "";}
+  function elemAutoPending(el){return !!(el && el.kling && el.kling.status==="pending" && !el.kling.needsCheck);}
+  function elemArchivedJobs(el){return (el && el.klingHistory)||[];}
+  function elemRecoverableJob(el){
+    return elemArchivedJobs(el).slice().reverse().find(function(k){return elemTaskId(k);}) ||
+      (el && el.kling && el.kling.status==="failed" && !el.kling.confirmedFailed && elemTaskId(el.kling)?el.kling:null);
+  }
+  function elemRecoveryHtml(el){
+    var k=el.kling||{},key=esc(el.key),h="";
+    if(k.status==="pending"){
+      if(elemTaskId(k))h+='<p class="hint">Kling 등록 작업 ID: '+esc(elemTaskId(k))+'</p>';
+      if(k.needsCheck){
+        h+='<p class="status bad">'+esc(k.notice||"기존 Kling 등록 작업의 완료 여부를 확인해야 해요.")+'</p>';
+        if(elemTaskId(k))h+='<button type="button" data-element-check="'+key+'">완료 여부 확인</button>'+
+          '<button type="button" class="ghost" data-element-resume="'+key+'">자동 확인 재개</button>';
+        else h+='<p class="hint">작업 ID가 없어 자동 조회할 수 없어요. Kling 등록 내역에서 기존 ID를 찾아 입력해주세요.</p>'+
+          '<input type="text" maxlength="128" placeholder="Kling 등록 작업 ID" data-element-task="'+key+'">'+
+          '<button type="button" data-element-attach="'+key+'">입력한 작업 ID로 완료 확인</button>';
+        h+='<button type="button" class="ghost danger" data-element-abandon="'+key+'">추적 포기·재등록 허용</button>';
+      }else h+='<button type="button" class="ghost" data-element-pause="'+key+'">자동 확인 중지</button>';
+    }else if(elemRecoverableJob(el)){
+      h+='<p class="status bad">이전 Kling 등록 작업이 남아 있어요. 새 유료 등록 전에 완료 여부를 확인하세요.</p>'+
+        '<button type="button" class="ghost" data-element-restore="'+key+'">이전 등록 작업 복구·확인</button>';
+    }else if(elemArchivedJobs(el).length){
+      h+='<p class="hint">확인되지 않은 과거 Kling 등록 요청이 '+elemArchivedJobs(el).length+'건 있어요. 재등록하면 추가 요금이 발생할 수 있어요.</p>';
+    }
+    return h;
+  }
   // 이름 규칙. 예약어 · [ ] @ 금지, 서로 포함되는 이름 금지(Kling 문서 권고: @Zhang / @ZhangSan).
   function elemNameProblem(proj, name, selfKey){
     name=String(name||"").trim();
@@ -4903,7 +4932,9 @@
         detail:el.scope==="global" ? "모든 숙소에서 같은 Kling 요소 ID 사용" :
           "영상화에서 정식 Kling 요소 ID 사용"};
     }else if(k.status==="pending"){
-      formal={label:"등록 중",tone:"pending",detail:"Kling 서버 등록을 기다리는 중"};
+      formal=k.needsCheck
+        ? {label:"확인 필요",tone:"warn",detail:"Kling 작업 ID를 보존했어요. 등록 완료 여부를 확인해주세요"}
+        : {label:"등록 중",tone:"pending",detail:"Kling 서버 등록을 기다리는 중"};
     }else if(k.status==="failed"){
       formal={label:"등록 실패",tone:"warn",
         detail:k.msg ? String(k.msg).slice(0,130) : "다시 등록할 수 있어요"};
@@ -5336,33 +5367,52 @@
   }
 
   function ensureClipPoll(){
-    if(!clipAutoJobIds(current).length && !elemPendingKeys(current).length)return;
+    if(!clipAutoJobIds(current).length && !elemPendingWork().length)return;
     if(!clipPollTimer)clipPollTimer=setTimeout(clipPollTick,CLIP.pollMs);
     if(!clipClock)clipClock=setInterval(clipClockTick,1000);
   }
   function clipClockTick(){
     var ids=clipAutoJobIds(current);
-    if(!ids.length && !elemPendingKeys(current).length){clearInterval(clipClock);clipClock=null;return;}
+    if(!ids.length && !elemPendingWork().length){clearInterval(clipClock);clipClock=null;return;}
     ids.forEach(function(pid){
       var el=view.querySelector('[data-cliptime="'+pid.replace(/"/g,'\\"')+'"]');
       if(el)el.textContent=clipElapsed(current.clipJobs[pid]);
     });
   }
   function elemPendingKeys(proj){
-    return elemList(proj).filter(function(el){return el.kling && el.kling.status==="pending";}).map(function(el){return el.key;});
+    return elemList(proj).filter(elemAutoPending).map(function(el){return el.key;});
+  }
+  // 숙소를 열지 않고 새로고침해도 프로젝트별 요소와 계정 공통 요소 등록 확인을 재개한다.
+  // 동일 요소를 숙소별 원본 사본과 공통 보관본에서 두 번 조회하지 않는다.
+  function elemPendingWork(){
+    var todo=[],globals=typeof sharedElements==="undefined"?[]:sharedElements;
+    globals.filter(elemAutoPending).forEach(function(el){todo.push({key:el.key,global:true,proj:null});});
+    var ps=(typeof projects==="undefined"?[]:projects).slice();
+    if(current){
+      var index=ps.findIndex(function(p){return p.id===current.id;});
+      if(index<0)ps.push(current);else ps[index]=current;
+    }
+    ps.forEach(function(proj){
+      (proj.elements||[]).filter(elemAutoPending).forEach(function(el){
+        if(globals.some(function(g){return g.sourceProject===proj.id&&g.sourceKey===el.key || g.name&&g.name===el.name;}))return;
+        if(typeof sharedDeletedKeys!=="undefined" &&
+           sharedDeletedKeys.indexOf("shared_"+proj.id+"_"+el.key)>=0)return;
+        todo.push({key:el.key,global:false,proj:proj});
+      });
+    });
+    return todo;
   }
   async function clipPollTick(){
     clipPollTimer=null;
     var proj=current;
     if(!uid)return;
-    var ids=clipAutoJobIds(proj),keys=elemPendingKeys(proj);
-    if(!ids.length&&!keys.length)return;
+    var ids=clipAutoJobIds(proj),work=elemPendingWork();
+    if(!ids.length&&!work.length)return;
     await Promise.all(ids.map(function(pid){return clipCheck(proj,pid);})
-      .concat(keys.map(function(k){
-        var el=elemByKey(proj,k);
-        return el&&el.scope==="global"?sharedCheck(k):elemCheck(proj, k);
+      .concat(work.map(function(w){
+        return w.global ? sharedCheck(w.key) : elemCheck(w.proj,w.key);
       })));
-    if(clipAutoJobIds(current).length||elemPendingKeys(current).length)ensureClipPoll();
+    if(clipAutoJobIds(current).length||elemPendingWork().length)ensureClipPoll();
   }
 
   // 일정 시간 경과 후에도 '완료'를 먼저 조회한다. 아직 처리 중이면 작업 ID를 보존해 수동 확인할 수 있게 한다.
@@ -5655,6 +5705,7 @@
         '<button type="button" data-shared-register="'+esc(el.key)+'">'+
         (st==="new"?"Kling 정식 등록":"Kling 정식 다시 등록")+'</button>':'')+
       ((st!=="ready" && st!=="pending" && !(el.angles||[]).length)?'<p class="hint">정식 재등록에는 다른 각도 사진 1장 이상이 필요해요. 일반 참조는 사용 가능해요.</p>':'')+
+      elemRecoveryHtml(el)+
       (elemErrors[el.key]?'<p class="status bad">'+esc(elemErrors[el.key])+'</p>':'')+'</div>';
   }
   function sharedRefreshLive(key){
@@ -5666,83 +5717,245 @@
     if(count)count.textContent="Kling 정식 등록 "+sharedElements.filter(function(e){return elemState(null,e)==="ready";}).length+"개 · 전체 "+sharedElements.length+"개";
     if(current)elemRefreshLive();
   }
-  async function sharedRegister(key){
-    var el=elemByKey(null,key), owner=uid;
-    if(!owner || !sharedLoaded || !el || el.scope!=="global" || elemPhotoLocked(el))return;
-    var st=elemState({elements:[]},el);
-    if(st==="ready")return;
-    if(st==="draft" || !(el.angles||[]).length){toast("기준 사진과 다른 각도 사진 1장 이상이 필요해요");return;}
-    var initial=!(el.kling && el.kling.elementId);
-    if(!confirm("「"+el.name+"」를 Kling 정식 요소로 "+(initial?"등록":"다시 등록")+"할까요?\n등록·생성 요금이 발생할 수 있어요. 일반 사진 참조는 정식 등록 없이도 사용할 수 있어요."))return;
-    elemInflight[key]=true;delete elemErrors[key];
-    var job={status:"pending",elementId:el.kling&&el.kling.elementId,taskId:null,sig:elemSig(el),at:Date.now()},saved=false;
+  // 미확인 등록을 실패 처리하지 않는다. 사진과 예전 element_id 는 그대로 둔다.
+  async function sharedPauseRegistration(key,k,message){
+    var live=elemByKey(null,key);
+    if(!live||live.kling!==k)return false;
+    var paused=Object.assign({},k,{needsCheck:true,notice:message});
     try{
-      await persistSharedElement(Object.assign({},el,{kling:job}),el);saved=true;sharedRefreshLive(key);
-      var r=await api(FN.clip,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
-        action:"element_create",projectId:"_shared_elements",name:el.name,desc:el.desc||"",front:el.front.id,
-        angles:(el.angles||[]).map(function(p){return p.id;})})});
+      await persistSharedElement(Object.assign({},live,{kling:paused}),k.unsavedSnapshot||live);
+      delete elemErrors[key];sharedRefreshLive(key);return true;
+    }catch(e){
+      // 응답이 불확실할 때는 클라이언트에서도 등록을 잠그고 작업 ID를 표시한다.
+      k.needsCheck=true;k.notice=message;
+      elemErrors[key]="등록 확인 상태 저장 실패. 이 화면의 작업 ID를 보관하고 다시 확인해주세요.";
+      sharedRefreshLive(key);
+      return false;
+    }
+  }
+  async function sharedRegister(key){
+    var el=elemByKey(null,key),owner=uid;
+    if(!owner||!sharedLoaded||!el||el.scope!=="global"||elemPhotoLocked(el))return;
+    var st=elemState({elements:[]},el);
+    if(st==="ready"||st==="pending")return;
+    if(st==="draft"||!(el.angles||[]).length){toast("기준 사진과 다른 각도 사진 1장 이상이 필요해요");return;}
+    if(elemArchivedJobs(el).length &&
+       !confirm("이 요소에 Kling 등록 작업 기록이 남아 있어요. 완료 여부 확인 전에 새 유료 등록을 시작하면 중복 결제될 수 있어요. 계속할까요?"))return;
+    var initial=!(el.kling&&el.kling.elementId);
+    if(!confirm("「"+el.name+"」를 Kling 정식 요소로 "+(initial?"등록":"다시 등록")+
+      "할까요?\n등록·생성 요금이 발생할 수 있어요. 일반 사진 참조는 정식 등록 없이도 사용할 수 있어요."))return;
+    elemInflight[key]=true;delete elemErrors[key];
+    var previous=el.kling||null,job={status:"pending",elementId:previous&&previous.elementId||null,
+      taskId:null,sig:elemSig(el),at:Date.now(),pollSince:Date.now(),prevElementId:previous&&previous.elementId||""};
+    var claimed=false,r=null;
+    try{
+      // 다른 기기의 등록과 충돌하면 유료 Kling API 호출 전에 멈춘다.
+      await persistSharedElement(Object.assign({},el,{kling:job}),el);
+      claimed=true;sharedRefreshLive(key);
+      r=await api(FN.clip,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+        action:"element_create",projectId:"_shared_elements",name:el.name,desc:el.desc||"",
+        front:el.front.id,angles:(el.angles||[]).map(function(p){return p.id;})})});
       var t=await r.text(),j;try{j=JSON.parse(t);}catch(e){}
-      if(!r.ok || !j || !j.operation || !j.operation.taskId)throw new Error((j&&(j.message||j.error))||"Kling 등록 응답을 확인하지 못했어요.");
+      if(!r.ok||!j||!j.operation||!j.operation.taskId)
+        throw new Error((j&&(j.message||j.error))||t.slice(0,160)||"Kling 등록 작업 번호를 받지 못했어요.");
       if(uid!==owner)return;
-      var live=elemByKey(null,key);if(!live || live.kling!==job)return;
+      var live=elemByKey(null,key);
+      if(!live||live.kling!==job)return;
       var expected=JSON.parse(JSON.stringify(live));
       job.taskId=String(j.operation.taskId);
       try{await persistSharedElement(Object.assign({},live,{kling:job}),expected);}
       catch(e){
         Object.defineProperty(job,"unsavedSnapshot",{value:expected,configurable:true});
-        elemErrors[key]="등록 요청은 접수됐지만 작업 번호 저장에 실패했어요. 페이지를 닫지 말고 완료를 기다려주세요.";
+        await sharedPauseRegistration(key,job,"Kling 작업 ID "+job.taskId+
+          "를 받았지만 저장 결과를 확인하지 못했어요. ID를 보존하고 다시 확인해주세요.");
       }
     }catch(e){
       if(uid!==owner)return;
-      elemErrors[key]=(saved?"등록 요청 결과를 확인하지 못했어요. 재시도 전 중복 요금에 주의해주세요. ":"")+((e&&e.message)||e);
-      var live=elemByKey(null,key);
-      if(saved && live && live.kling===job){
-        var failed=Object.assign({},job,{status:"failed",msg:elemErrors[key]});
-        try{await persistSharedElement(Object.assign({},live,{kling:failed}),live);}catch(ignore){}
+      var message=(e&&e.message)||String(e),live=elemByKey(null,key);
+      if(!claimed){
+        elemErrors[key]="등록 시작 기록 저장 실패. 유료 Kling 요청은 보내지 않았어요: "+message;
+      }else if(live&&live.kling===job){
+        var rejected=r&&r.status>=400&&r.status<500&&r.status!==408&&r.status!==429;
+        if(rejected){
+          try{
+            await persistSharedElement(Object.assign({},live,{kling:Object.assign({},job,{
+              status:"failed",msg:"Kling 등록 요청 거절(확인됨): "+message,confirmedFailed:true
+            })}),job.unsavedSnapshot||live);
+          }catch(e2){await sharedPauseRegistration(key,job,"등록 요청 거절 후 기록 저장이 실패했어요. 기존 요청을 확인해주세요.");}
+        }else await sharedPauseRegistration(key,job,
+          "등록 요청 결과를 확인하지 못했어요 ("+message+
+          "). Kling에서 접수됐을 수 있으니 기존 등록 내역을 먼저 확인해주세요.");
       }
+      console.warn("Kling element create uncertain/failed",message);
     }finally{
-      delete elemInflight[key];if(uid===owner){sharedRefreshLive(key);ensureClipPoll();}
+      delete elemInflight[key];
+      if(uid===owner){sharedRefreshLive(key);ensureClipPoll();}
     }
   }
-  async function sharedCheck(key){
+  async function sharedCheck(key,options){
     var el=elemByKey(null,key),k=el&&el.kling,owner=uid;
-    if(!owner || !k || k.status!=="pending" || elemInflight[key])return;
+    if(!owner||!k||k.status!=="pending"||elemInflight[key])return;
+    var manual=!!(options&&options.force);
+    if(k.needsCheck&&!manual)return;
+    if(!k.taskId){
+      if(Date.now()-k.at>120000||manual)
+        await sharedPauseRegistration(key,k,"Kling 등록 작업 ID가 없어요. 접수됐을 수 있으니 Kling 등록 내역을 먼저 확인해주세요.");
+      return;
+    }
     elemInflight[key]=true;
+    var elapsed=Date.now()-(k.pollSince||k.at)>ELEM.giveUpMs;
     try{
-      var next=null;
-      if(!k.taskId){
-        if(Date.now()-k.at>120000)next=Object.assign({},k,{status:"failed",msg:"작업 번호를 받지 못했어요. 재시도 전 Kling 등록 내역을 확인해주세요."});
-      }else if(Date.now()-k.at>ELEM.giveUpMs){
-        next=Object.assign({},k,{status:"failed",msg:"등록 확인 시간이 초과됐어요. 재시도 전 Kling 등록 내역을 확인해주세요."});
-      }else{
-        var r=await api(FN.clip,{method:"POST",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"element_status",projectId:"_shared_elements",operation:{taskId:k.taskId}})});
-        var t=await r.text(),j;try{j=JSON.parse(t);}catch(e){}
-        if(!r.ok){
-          if(r.status>=400 && r.status<500 && r.status!==429)next=Object.assign({},k,{status:"failed",msg:(j&&(j.message||j.error))||"등록 상태 확인 실패"});
-        }else if(j && j.status==="ready" && j.elementId){
-          next={status:"ready",elementId:String(j.elementId),taskId:k.taskId,sig:k.sig,at:Date.now()};
-        }else if(j && (j.status==="failed" || j.status==="error"))next=Object.assign({},k,{status:"failed",msg:j.message||j.error||"등록 실패"});
+      var r=await api(FN.clip,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"element_status",projectId:"_shared_elements",operation:{taskId:k.taskId}})});
+      var t=await r.text(),j;try{j=JSON.parse(t);}catch(e){}
+      if(!r.ok||!j||!j.status){
+        elemMisses[key]=(elemMisses[key]||0)+1;
+        var hard=r.status>=400&&r.status<500&&r.status!==429;
+        if(hard||elapsed||manual||elemMisses[key]>=ELEM.maxMisses)
+          await sharedPauseRegistration(key,k,"Kling 등록 완료 조회 실패 ("+
+            ((j&&(j.message||j.error))||t.slice(0,160)||("HTTP "+r.status))+
+            "). 작업 ID "+k.taskId+"를 보존했어요. 나중에 다시 확인해주세요.");
+        return;
       }
-      if(!next || uid!==owner)return;
-      var live=elemByKey(null,key);if(!live || live.kling!==k)return;
-      var retired=(live.retiredElementIds||[]).slice();
-      if(next.status==="ready" && k.elementId && String(k.elementId)!==next.elementId && retired.indexOf(String(k.elementId))<0)retired.push(String(k.elementId));
-      // 성공 저장 후에만 새 ID를 활성화. 이전 ID와 사진은 진행 중 작업을 위해 보관.
+      elemMisses[key]=0;
+      if(j.status==="pending"){
+        if(elapsed||manual)await sharedPauseRegistration(key,k,
+          "Kling에서 아직 등록 중이에요. 작업 ID "+k.taskId+"를 보존했어요. 나중에 완료 여부를 다시 확인해주세요.");
+        return;
+      }
+      var live=elemByKey(null,key);
+      if(!live||live.kling!==k||uid!==owner)return;
+      var next=null,retired=(live.retiredElementIds||[]).slice();
+      if(j.status==="ready"&&j.elementId){
+        next={status:"ready",elementId:String(j.elementId),taskId:k.taskId,sig:k.sig,at:Date.now()};
+        if(k.elementId&&String(k.elementId)!==next.elementId&&retired.indexOf(String(k.elementId))<0)
+          retired.push(String(k.elementId));
+      }else if(j.status==="error"||j.status==="failed"){
+        next=Object.assign({},k,{status:"failed",needsCheck:false,msg:j.message||j.error||"Kling 등록 실패",
+          confirmedFailed:true});
+      }
+      if(!next){
+        await sharedPauseRegistration(key,k,"Kling에서 알 수 없는 등록 상태를 돌려줬어요. 기존 작업 ID를 보존했어요.");
+        return;
+      }
+      // DB에 완료 ID가 성공적으로 저장되기 전에는 UI의 정식 등록 상태를 바꾸지 않는다.
       await persistSharedElement(Object.assign({},live,{kling:next,retiredElementIds:retired}),k.unsavedSnapshot||live);
-      delete elemErrors[key];sharedRefreshLive(key);
-      if(next.status==="ready")toast("「"+live.name+"」 정식 재등록 완료 · 모든 숙소에 반영됐어요");
+      delete elemErrors[key];delete elemMisses[key];sharedRefreshLive(key);
+      if(next.status==="ready")toast("「"+live.name+"」 Kling 정식 등록 완료 · 모든 숙소에서 사용할 수 있어요");
     }catch(e){
       console.error("공통 요소 등록 상태 저장/조회 실패",e);
-      if(e && e.code==="shared_conflict" && uid===owner){await loadSharedElements();sharedRefreshLive(key);}
+      if(e&&e.code==="shared_conflict"&&uid===owner){await loadSharedElements();sharedRefreshLive(key);}
+      else{
+        elemMisses[key]=(elemMisses[key]||0)+1;
+        if(elapsed||manual||elemMisses[key]>=ELEM.maxMisses)
+          await sharedPauseRegistration(key,k,"Kling 등록 확인 중 오류가 났어요. ID "+k.taskId+"를 보존하고 다시 확인해주세요.");
+      }
+    }finally{delete elemInflight[key];}
+  }
+
+  // 공통 요소는 revision CAS, 개별 요소는 숙소 데이터 저장 성공 후에만 상태를 변경한다.
+  async function elemSaveRecovery(proj,el,nextK,nextHistory){
+    var key=el.key;
+    nextHistory=nextHistory||elemArchivedJobs(el).slice();
+    if(el.scope==="global"){
+      try{
+        await persistSharedElement(Object.assign({},el,{kling:nextK,klingHistory:nextHistory}),el);
+        delete elemErrors[key];sharedRefreshLive(key);return true;
+      }catch(e){
+        elemErrors[key]="작업 상태 저장 실패: "+((e&&e.message)||e);
+        sharedRefreshLive(key);return false;
+      }
     }
-    finally{delete elemInflight[key];}
+    var oldK=el.kling,oldHistory=el.klingHistory;
+    el.kling=nextK;el.klingHistory=nextHistory;
+    if(!await persist(proj)){
+      el.kling=oldK;el.klingHistory=oldHistory;
+      elemErrors[key]="요소 작업 상태를 저장하지 못했어요. 기존 작업은 그대로예요.";
+      if(current===proj)elemRefreshLive();return false;
+    }
+    delete elemErrors[key];if(current===proj)elemRefreshLive();return true;
+  }
+  function elemRecoveryTarget(key){
+    var el=elemByKey(current,key);
+    if(!el)return null;
+    return {el:el,proj:el.scope==="global"?null:current};
+  }
+  async function elemManualCheck(key){
+    var x=elemRecoveryTarget(key);
+    if(!x||!x.el.kling||x.el.kling.status!=="pending"||elemInflight[key])return;
+    if(x.el.scope==="global")await sharedCheck(key,{force:true});
+    else await elemCheck(x.proj,key,{force:true});
+  }
+  async function elemPauseByKey(key){
+    var x=elemRecoveryTarget(key);
+    if(!x||!elemAutoPending(x.el)||elemInflight[key])return;
+    var k=x.el.kling,message="자동 확인만 중지했어요. Kling 등록 작업은 취소되지 않으며 작업 ID를 보존했어요.";
+    if(x.el.scope==="global")await sharedPauseRegistration(key,k,message);
+    else await elemPauseRegistration(x.proj,key,k,message);
+  }
+  async function elemResumeByKey(key){
+    var x=elemRecoveryTarget(key),k=x&&x.el.kling;
+    if(!k||k.status!=="pending"||!k.needsCheck||!elemTaskId(k)||elemInflight[key])return;
+    var next=Object.assign({},k,{needsCheck:false,notice:"",pollSince:Date.now()});
+    if(await elemSaveRecovery(x.proj,x.el,next)) {
+      delete elemMisses[key];ensureClipPoll();
+    }
+  }
+  // 추적 포기는 Kling 취소가 아니다. 미확인 등록은 두 번 확인한 뒤에도 보관 기록에 남긴다.
+  async function elemAbandonByKey(key){
+    var x=elemRecoveryTarget(key),k=x&&x.el.kling;
+    if(!k||k.status!=="pending"||!k.needsCheck||elemInflight[key])return;
+    if(!confirm("「"+x.el.name+"」 Kling 등록은 실제로 끝났을 수 있어요.\n추적을 포기해도 Kling 서버의 작업·요금은 취소되지 않아요. 작업 기록을 보관할까요?"))return;
+    if(!confirm("최종 확인: 새로 정식 등록하면 중복 요금이 발생할 수 있어요. 기존 완료 여부를 확인한 뒤 진행하는 것이 안전해요.\n정말 추적을 포기할까요?"))return;
+    var history=elemArchivedJobs(x.el).slice();
+    history.push(Object.assign({},k,{archivedAt:Date.now()}));
+    var next=Object.assign({},k,{status:"failed",needsCheck:false,msg:"이전 등록 작업을 보관했어요. 재등록 전에 먼저 복구·확인해주세요."});
+    if(await elemSaveRecovery(x.proj,x.el,next,history))
+      toast("Kling 등록 작업 ID를 보관했어요. 복구·확인할 수 있어요.");
+  }
+  async function elemRestoreByKey(key){
+    var x=elemRecoveryTarget(key);
+    if(!x||elemInflight[key]||x.el.kling&&x.el.kling.status==="pending")return;
+    if(x.el.kling&&x.el.kling.status==="ready"&&x.el.kling.sig===elemSig(x.el))return;
+    var history=elemArchivedJobs(x.el).slice();
+    var at=-1;
+    for(var i=history.length-1;i>=0;i--)if(elemTaskId(history[i])){at=i;break;}
+    var previous=at>=0?history[at]:elemRecoverableJob(x.el);
+    if(!previous||!elemTaskId(previous))return;
+    if(!confirm("이전 Kling 등록 작업 ID "+elemTaskId(previous)+"의 완료 여부를 확인할까요? 이 확인은 새 유료 등록 요청이 아니에요."))return;
+    if(at>=0)history.splice(at,1);
+    var next=Object.assign({},previous,{status:"pending",needsCheck:true,
+      notice:"이전 등록 작업의 완료 여부를 확인할게요. 새 유료 등록 요청은 보내지 않아요."});
+    if(await elemSaveRecovery(x.proj,x.el,next,history))await elemManualCheck(key);
+  }
+  // Kling 계정에서 확인한 작업 번호를 연결하는 복구 전용 입력. 유료 element_create 호출 금지.
+  async function elemAttachByKey(key){
+    var x=elemRecoveryTarget(key),k=x&&x.el.kling;
+    if(!k||k.status!=="pending"||!k.needsCheck||elemTaskId(k)||elemInflight[key])return;
+    var inputs=Array.from(view.querySelectorAll("[data-element-task]"));
+    var input=inputs.find(function(a){return a.dataset.elementTask===key;});
+    var taskId=input&&String(input.value||"").trim();
+    if(!/^[A-Za-z0-9_-]{1,128}$/.test(taskId||"")){
+      toast("Kling 등록 작업 ID를 영문·숫자·-·_ 로 입력해주세요.");return;
+    }
+    if(!confirm("Kling 등록 작업 ID "+taskId+"의 완료 여부를 조회할까요?\n새 등록·결제 요청은 보내지 않아요."))return;
+    var next=Object.assign({},k,{taskId:taskId,needsCheck:true,notice:"입력한 기존 Kling 작업 ID를 확인할게요."});
+    if(await elemSaveRecovery(x.proj,x.el,next))await elemManualCheck(key);
   }
 
   view.addEventListener("click",function(ev){
     var edit=elemTarget(ev,"data-element-photos"),reg=elemTarget(ev,"data-shared-register");
+    var check=elemTarget(ev,"data-element-check"),pause=elemTarget(ev,"data-element-pause"),
+        resume=elemTarget(ev,"data-element-resume"),abandon=elemTarget(ev,"data-element-abandon"),
+        restore=elemTarget(ev,"data-element-restore"),attach=elemTarget(ev,"data-element-attach");
     if(edit)elemPhotoEditorOpen(edit.dataset.elementPhotos);
     else if(reg)sharedRegister(reg.dataset.sharedRegister);
+    else if(check)elemManualCheck(check.dataset.elementCheck);
+    else if(pause)elemPauseByKey(pause.dataset.elementPause);
+    else if(resume)elemResumeByKey(resume.dataset.elementResume);
+    else if(abandon)elemAbandonByKey(abandon.dataset.elementAbandon);
+    else if(restore)elemRestoreByKey(restore.dataset.elementRestore);
+    else if(attach)elemAttachByKey(attach.dataset.elementAttach);
   });
 
   // ---------- ⑨ 요소 관리 ----------
@@ -5861,104 +6074,147 @@
       body:JSON.stringify({action:"element_delete", elementId:String(elementId)})}).catch(function(){});
   }
 
+  async function elemPauseRegistration(proj,key,k,message){
+    var el=elemByKey(proj,key);
+    if(!el||el.kling!==k)return false;
+    var paused=Object.assign({},k,{needsCheck:true,notice:message});
+    el.kling=paused;
+    var stored=await persist(proj);
+    if(!stored){
+      k.needsCheck=true;k.notice=message;
+      el.kling=k;
+      elemErrors[key]="등록 확인 상태 저장이 불확실해요. 이 화면에서 작업 ID를 기록하고 다시 확인해주세요.";
+    }else delete elemErrors[key];
+    if(current===proj)elemRefreshLive();
+    return stored;
+  }
+
   // Kling 고정 요소 등록(선택). 사진 한 장만 있으면 등록 없이 이미지 참조로 사용한다.
   async function elemRegister(key){
-    var proj=current, el=elemByKey(proj, key);
-    if(!el || el.scope==="global" || elemPhotoLocked(el)) return;
-    var st=elemState(proj, el);
-    if(st==="draft"){ elemErrors[key]="요소 이름과 기준 사진 한 장을 먼저 넣어주세요."; renderClipsSoon(proj); return; }
-    if(st==="local"){ elemErrors[key]="사진 한 장으로 이미 사용할 수 있어요. Kling 고정 요소로 등록하려면 다른 각도 사진을 한 장 이상 추가해주세요."; renderClipsSoon(proj); return; }
-    if(st==="pending" || st==="ready") return;
-    if(!confirm("「"+el.name+"」"+" Kling 정식 요소로 등록할까요?\n등록·생성 요금이 발생할 수 있어요. 일반 사진 참조는 등록 없이도 사용할 수 있어요."))return;
-    var prev=el.kling || null;
-    var body={action:"element_create", projectId:proj.id, name:el.name, desc:String(el.desc||"").trim(),
-      front:el.front.id, angles:(el.angles||[]).map(function(x){ return x.id; })};
-    var job={status:"pending", taskId:null, sig:elemSig(el), at:Date.now(),
-      prevElementId: prev && prev.elementId ? String(prev.elementId) : ""};
-    elemInflight[key]=true;
-    delete elemErrors[key];
-    el.kling=job;
-    renderClipsSoon(proj);
+    var proj=current,el=elemByKey(proj,key);
+    if(!el||el.scope==="global"||elemPhotoLocked(el))return;
+    var st=elemState(proj,el);
+    if(st==="draft"){elemErrors[key]="요소 이름과 기준 사진 한 장을 먼저 넣어주세요.";renderClipsSoon(proj);return;}
+    if(st==="local"){elemErrors[key]="일반 요소는 사진 한 장으로 이미 사용할 수 있어요. Kling 등록에는 다른 각도 사진 한 장 이상이 필요해요.";renderClipsSoon(proj);return;}
+    if(st==="pending"||st==="ready")return;
+    if(elemArchivedJobs(el).length &&
+      !confirm("기존 Kling 등록 작업 기록이 남아 있어요. 먼저 기존 완료 여부를 확인하세요. 그래도 새 유료 등록을 진행할까요?"))return;
+    if(!confirm("「"+el.name+"」 Kling 정식 요소로 등록할까요?\n등록·생성 요금이 발생할 수 있어요. 일반 사진 참조는 등록 없이도 쓸 수 있어요."))return;
+    var prev=el.kling||null;
+    var body={action:"element_create",projectId:proj.id,name:el.name,desc:String(el.desc||"").trim(),
+      front:el.front.id,angles:(el.angles||[]).map(function(p){return p.id;})};
+    var job={status:"pending",taskId:null,sig:elemSig(el),at:Date.now(),pollSince:Date.now(),
+      prevElementId:prev&&prev.elementId?String(prev.elementId):""};
+    elemInflight[key]=true;delete elemErrors[key];el.kling=job;renderClipsSoon(proj);
+    var r=null;
     try{
-      var r=await api(FN.clip,{method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
-      var t=await r.text(), j=null;
-      try{ j=JSON.parse(t); }catch(e){}
-      if(!r.ok || !j || !j.operation || !j.operation.taskId){
-        var msg=(j && (j.message||j.error)) || t.slice(0,160) || ("HTTP "+r.status);
-        if(r.status===404) msg="영상 함수(lodging-reels-clip)가 아직 배포되지 않았어요.";
-        throw new Error(msg);
+      // 생성 요청 전에 반드시 계정 프로젝트에 "진행 중"을 먼저 저장한다.
+      if(!await persist(proj)){
+        el.kling=prev;
+        elemErrors[key]="등록 시작 기록 저장 실패. 유료 Kling 요청은 보내지 않았어요.";
+        return;
+      }
+      r=await api(FN.clip,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      var t=await r.text(),j=null;try{j=JSON.parse(t);}catch(e){}
+      if(!r.ok||!j||!j.operation||!j.operation.taskId){
+        var reason=(j&&(j.message||j.error))||t.slice(0,160)||("HTTP "+r.status);
+        if(r.status===404)reason="영상 함수(lodging-reels-clip)가 아직 배포되지 않았어요.";
+        throw new Error(reason);
       }
       if(el.kling===job){
         job.taskId=String(j.operation.taskId);
-        await persist(proj);
-        ensureClipPoll();
+        if(!await persist(proj))
+          await elemPauseRegistration(proj,key,job,"Kling 작업 ID "+job.taskId+
+            "를 받았지만 저장 결과를 확인하지 못했어요. 같은 작업을 다시 확인해주세요.");
+        else ensureClipPoll();
       }
     }catch(e){
-      if(el.kling===job) el.kling=prev;
-      elemErrors[key]="Kling 등록 요청 실패: "+((e && e.message) || String(e));
+      if(el.kling!==job)return;
+      var reason=(e&&e.message)||String(e);
+      var rejected=r&&r.status>=400&&r.status<500&&r.status!==408&&r.status!==429;
+      if(rejected){
+        el.kling=prev;
+        if(!await persist(proj)){
+          el.kling=job;
+          await elemPauseRegistration(proj,key,job,"Kling 등록 요청 거절 후 기록 저장이 불확실해요. 기존 작업을 확인해주세요.");
+        }else elemErrors[key]="Kling 등록 요청 거절: "+reason;
+      }else await elemPauseRegistration(proj,key,job,
+        "Kling 등록 요청 결과를 확인하지 못했어요 ("+reason+
+        "). 이미 접수돼 결제됐을 수 있어요. 새로운 유료 등록 전에 Kling 등록 내역을 확인해주세요.");
+      console.warn("Kling element registration needs review",reason);
     }finally{
-      delete elemInflight[key];
+      delete elemInflight[key];renderClipsSoon(proj);
+      if(uid&&current===proj)ensureClipPoll();
     }
-    renderClipsSoon(proj);
   }
 
-  async function elemCheck(proj, key){
-    var el=elemByKey(proj, key), k=el && el.kling;
-    if(!k || k.status!=="pending" || elemInflight[key]) return;
-    var done=async function(next, msg){
-      if(el.kling!==k) return;
-      el.kling=next;
-      if(msg) elemErrors[key]=msg; else delete elemErrors[key];
-      await persist(proj);
-      // 프롬프트를 적는 중이어도 상태 줄은 바로 바뀌게(화면 전체를 다시 그리지 않는다).
-      if(current===proj) elemRefreshLive();
-    };
+  async function elemCheck(proj,key,options){
+    var el=elemByKey(proj,key),k=el&&el.kling;
+    if(!k||k.status!=="pending"||elemInflight[key])return;
+    var manual=!!(options&&options.force);
+    if(k.needsCheck&&!manual)return;
     if(!k.taskId){
-      if(Date.now()-k.at>120000) await done({status:"failed", msg:"요청이 중간에 끊겼어요", sig:k.sig, at:Date.now()});
-      return;
-    }
-    if(Date.now()-k.at>ELEM.giveUpMs){
-      await done({status:"failed", msg:"30분 넘게 안 끝났어요", sig:k.sig, at:Date.now()});
+      if(Date.now()-k.at>120000||manual)
+        await elemPauseRegistration(proj,key,k,"Kling 등록 작업 ID가 없어요. 접수됐을 수 있으니 Kling 등록 내역을 먼저 확인해주세요.");
       return;
     }
     elemInflight[key]=true;
+    var elapsed=Date.now()-(k.pollSince||k.at)>ELEM.giveUpMs;
     try{
-      var r=await api(FN.clip,{method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({action:"element_status", projectId:proj.id, operation:{taskId:k.taskId}})});
-      var t=await r.text(), j=null;
-      try{ j=JSON.parse(t); }catch(e){}
-      if(!r.ok || !j || !j.status){
-        if(r.status>=400 && r.status<500 && r.status!==429){
-          await done({status:"failed", msg:(j && (j.message||j.error)) || ("HTTP "+r.status), sig:k.sig, at:Date.now()});
-        }
+      var r=await api(FN.clip,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"element_status",projectId:proj.id,operation:{taskId:String(k.taskId)}})});
+      var t=await r.text(),j=null;try{j=JSON.parse(t);}catch(e){}
+      if(!r.ok||!j||!j.status){
+        elemMisses[key]=(elemMisses[key]||0)+1;
+        if((r.status>=400&&r.status<500&&r.status!==429)||elapsed||manual||elemMisses[key]>=ELEM.maxMisses)
+          await elemPauseRegistration(proj,key,k,"Kling 등록 확인 실패 ("+
+            ((j&&(j.message||j.error))||t.slice(0,160)||("HTTP "+r.status))+
+            "). 기존 작업 ID "+k.taskId+"를 보존했어요.");
         return;
       }
-      if(j.status==="pending") return;
-      if(j.status==="ready" && j.elementId){
-        await done({status:"ready", elementId:String(j.elementId), taskId:k.taskId, sig:k.sig, at:Date.now()});
-        // 기존 테스트 모의 환경에는 이 함수가 없다. 실사용에서는 공통 사진 사본과 ID를 저장한다.
-        var savedShared=false;
-        if(typeof publishSharedElement==="function"){
-          try{savedShared=await publishSharedElement(proj,el);}
-          catch(e){
-            elemErrors[key]="Kling 등록은 완료됐지만 공통 보관 실패: "+((e&&e.message)||e)+
-              " · 다음 접속 때 자동으로 다시 시도해요.";
-            if(current===proj) elemRefreshLive();
-          }
+      elemMisses[key]=0;
+      if(j.status==="pending"){
+        if(elapsed||manual)await elemPauseRegistration(proj,key,k,
+          "Kling에서 아직 등록 중이에요. 작업 ID "+k.taskId+"를 보존했어요. 나중에 완료 여부를 다시 확인해주세요.");
+        return;
+      }
+      if(el.kling!==k)return;
+      var ready=j.status==="ready"&&j.elementId;
+      var failed=j.status==="failed"||j.status==="error";
+      if(!ready&&!failed){
+        await elemPauseRegistration(proj,key,k,"Kling에서 알 수 없는 등록 상태를 돌려줬어요. 작업 ID를 보존했어요.");
+        return;
+      }
+      var next=ready?
+        {status:"ready",elementId:String(j.elementId),taskId:k.taskId,sig:k.sig,at:Date.now()}:
+        Object.assign({},k,{status:"failed",needsCheck:false,msg:j.message||j.error||"등록 실패",confirmedFailed:true});
+      el.kling=next;
+      if(!await persist(proj)){
+        el.kling=k;
+        await elemPauseRegistration(proj,key,k,"Kling 등록 결과의 저장을 확인하지 못했어요. 기존 작업 ID "+k.taskId+"를 보존했어요.");
+        return;
+      }
+      delete elemErrors[key];delete elemMisses[key];
+      if(current===proj)elemRefreshLive();
+      if(ready){
+        // 새 element_id 저장 후에만 정식 참조로 사용. 이전 ID도 진행 중 작업을 위해 기록에 남긴다.
+        if(k.prevElementId&&k.prevElementId!==next.elementId){
+          el.retiredElementIds=el.retiredElementIds||[];
+          if(el.retiredElementIds.indexOf(String(k.prevElementId))<0)el.retiredElementIds.push(String(k.prevElementId));
+          await persist(proj);
         }
-        if(k.prevElementId && k.prevElementId!==String(j.elementId) &&
-           !(typeof sharedElements!=="undefined" && sharedElements.some(function(g){
-             return g.kling && String(g.kling.elementId)===String(k.prevElementId);
-           }))) klingElementDelete(k.prevElementId);
-        if(current===proj) toast("「"+el.name+"」 Kling 등록이 끝났어요"+(savedShared?" · 계정 공통 보관 완료":" · 공통 보관 확인 필요"));
-      }else{
-        await done({status:"failed", msg:j.message || j.error || "알 수 없는 오류", sig:k.sig, at:Date.now()});
+        if(typeof publishSharedElement==="function"){
+          try{await publishSharedElement(proj,el);}
+          catch(e){elemErrors[key]="Kling 등록 완료, 계정 공통 보관 실패: "+((e&&e.message)||e)+" · 재접속 시 다시 확인해주세요.";}
+        }
+        if(current===proj)toast("「"+el.name+"」 Kling 등록 완료 · 공통 요소 저장 상태를 확인해주세요");
       }
     }catch(e){
-      console.error("element status failed", e);
-    }finally{
-      delete elemInflight[key];
-    }
+      elemMisses[key]=(elemMisses[key]||0)+1;
+      console.error("Kling element status failed",e);
+      if(elapsed||manual||elemMisses[key]>=ELEM.maxMisses)
+        await elemPauseRegistration(proj,key,k,"Kling 등록 확인 중 오류가 났어요. 기존 작업 ID를 보존했어요.");
+    }finally{delete elemInflight[key];}
   }
 
   function elemSection(){
@@ -6023,6 +6279,7 @@
       (st==="new" || st==="failed" || st==="stale"
         ? '<button type="button" class="primary" data-elreg="'+key+'">'+(st==="new" ? "Kling 정식 등록" : "Kling 다시 등록")+'</button>' : '')+
       '<button type="button" class="ghost danger" data-eldel="'+key+'">지우기</button></div>';
+    h+=elemRecoveryHtml(el);
     if(elemErrors[el.key]) h+='<p class="status bad">'+esc(elemErrors[el.key])+'</p>';
     return h;
   }
@@ -6868,7 +7125,7 @@
     Array.prototype.forEach.call(view.querySelectorAll("video[data-clipplay]"),function(v){
       v.addEventListener("click",function(){ if(v.paused) v.play().catch(function(){}); else v.pause(); });
     });
-    if(clipJobIds(current).length) ensureClipPoll();
+    if(clipJobIds(current).length || elemPendingWork().length) ensureClipPoll();
 
     var rm=document.getElementById("remap");
     if(rm) rm.addEventListener("click",function(){
@@ -7109,6 +7366,8 @@
     await checkFonts();
     capNote="";
     renderList();
+    // 메인에서 이미 저장된 숙소별·계정 공통 요소도 완료 상태 확인을 재개한다.
+    ensureClipPoll();
     document.getElementById("where").textContent="계정 저장";
     // 예전에 숙소별로 등록해 둔 정식 요소도 새 Kling 호출 없이 계정 공통 목록으로 옮긴다.
     syncExistingSharedElements().then(function(){

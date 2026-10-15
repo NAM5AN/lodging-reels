@@ -33,7 +33,7 @@ function harness(opt={}){
     mentionWarnings:()=>[],clipDuration:()=>5,clipHintText:()=> "가공 사진",
     clipRequest:()=>({action:"start",projectId:"p1",edited:EDIT,original:PID,
       refs:[],elements:[],duration:5,prompt:"a simple motion"}),
-    clipBlocker:()=>"",elemPendingKeys:()=>[],elemByKey:()=>null,
+    clipBlocker:()=>"",elemPendingKeys:()=>[],elemPendingWork:()=>[],elemByKey:()=>null,
     sharedCheck:async()=>{},elemCheck:async()=>{},
     renderClipsSoon:()=>{},renderEdit:()=>{},toast:msg=>toasts.push(msg),
     confirm:msg=>{confirms.push(msg);return opt.confirm===undefined?false:opt.confirm;},

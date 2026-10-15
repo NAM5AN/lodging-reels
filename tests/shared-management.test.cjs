@@ -41,7 +41,7 @@ function pure(extra={}){
   },extra);
   return funcs(ctx,[
     "elemList(proj){","elemByKey(proj, key){","elemByName(proj, name){",
-    "elemPhotos(el){","elemSig(el){","elemState(proj, el){","elemPhotoLocked(el){","sharedRegistrationHtml(el){","elemNameProblem(proj, name, selfKey){",
+    "elemPhotos(el){","elemSig(el){","elemState(proj, el){","elemTaskId(k){","elemAutoPending(el){","elemArchivedJobs(el){","elemRecoverableJob(el){","elemRecoveryHtml(el){","elemPhotoLocked(el){","sharedRegistrationHtml(el){","elemNameProblem(proj, name, selfKey){",
     "sharedUsageSummary(el){","sharedNameProblem(el, name){",
     "updateSharedMetadata(key, name, desc){","sharedDeletedLabel(){",
     "deleteSharedRegistered(key){"

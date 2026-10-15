@@ -13,7 +13,7 @@ function grab(sig){
 }
 const FNS=["elemList(proj){","elemByName(proj, name){","elemPhotos(el){","elemSig(el){",
   "elemNameProblem(proj, name, selfKey){","elemState(proj, el){",
-  "elemStatusDetails(proj, el){","elemStatusRows(proj, el){","elemStateHtml(el){"];
+  "elemStatusDetails(proj, el){","elemStatusRows(proj, el){","elemTaskId(k){","elemAutoPending(el){","elemArchivedJobs(el){","elemRecoverableJob(el){","elemRecoveryHtml(el){","elemStateHtml(el){"];
 function harness(el,globals=[]){
   const proj={id:"p_solo",elements:el?[el]:[]};
   const ctx=vm.createContext({
