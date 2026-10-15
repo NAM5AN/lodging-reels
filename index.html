@@ -4862,6 +4862,33 @@
   function elemPhotos(el){ return [el.front].concat(el.angles||[]).filter(function(x){ return x && x.id; }); }
   // 등록 당시 사진 묶음. 사진이 바뀌면 Kling 요소는 다시 등록해야 한다.
   function elemSig(el){ return elemPhotos(el).map(function(x){ return x.id; }).join("|"); }
+  // Kling 등록은 결제 가능한 비동기 작업. 완료 여부가 불분명하면 작업 ID를 보존한다.
+  function elemTaskId(k){return k && k.taskId ? String(k.taskId) : "";}
+  function elemAutoPending(el){return !!(el && el.kling && el.kling.status==="pending" && !el.kling.needsCheck);}
+  function elemArchivedJobs(el){return (el && el.klingHistory)||[];}
+  function elemRecoverableJob(el){
+    return elemArchivedJobs(el).slice().reverse().find(function(k){return elemTaskId(k);}) ||
+      (el && el.kling && el.kling.status==="failed" && elemTaskId(el.kling)?el.kling:null);
+  }
+  function elemRecoveryHtml(el){
+    var k=el.kling||{},key=esc(el.key),h="";
+    if(k.status==="pending"){
+      if(elemTaskId(k))h+='<p class="hint">Kling 등록 작업 ID: '+esc(elemTaskId(k))+'</p>';
+      if(k.needsCheck){
+        h+='<p class="status bad">'+esc(k.notice||"기존 Kling 등록 작업의 완료 여부를 확인해야 해요.")+'</p>';
+        if(elemTaskId(k))h+='<button type="button" data-element-check="'+key+'">완료 여부 확인</button>'+
+          '<button type="button" class="ghost" data-element-resume="'+key+'">자동 확인 재개</button>';
+        else h+='<p class="hint">작업 ID가 없어 자동 조회할 수 없어요. Kling 등록 내역을 먼저 확인해주세요.</p>';
+        h+='<button type="button" class="ghost danger" data-element-abandon="'+key+'">추적 포기·재등록 허용</button>';
+      }else h+='<button type="button" class="ghost" data-element-pause="'+key+'">자동 확인 중지</button>';
+    }else if(elemRecoverableJob(el)){
+      h+='<p class="status bad">이전 Kling 등록 작업이 남아 있어요. 새 유료 등록 전에 완료 여부를 확인하세요.</p>'+
+        '<button type="button" class="ghost" data-element-restore="'+key+'">이전 등록 작업 복구·확인</button>';
+    }else if(elemArchivedJobs(el).length){
+      h+='<p class="hint">확인되지 않은 과거 Kling 등록 요청이 '+elemArchivedJobs(el).length+'건 있어요. 재등록하면 추가 요금이 발생할 수 있어요.</p>';
+    }
+    return h;
+  }
   // 이름 규칙. 예약어 · [ ] @ 금지, 서로 포함되는 이름 금지(Kling 문서 권고: @Zhang / @ZhangSan).
   function elemNameProblem(proj, name, selfKey){
     name=String(name||"").trim();
@@ -4903,7 +4930,9 @@
         detail:el.scope==="global" ? "모든 숙소에서 같은 Kling 요소 ID 사용" :
           "영상화에서 정식 Kling 요소 ID 사용"};
     }else if(k.status==="pending"){
-      formal={label:"등록 중",tone:"pending",detail:"Kling 서버 등록을 기다리는 중"};
+      formal=k.needsCheck
+        ? {label:"확인 필요",tone:"warn",detail:"Kling 작업 ID를 보존했어요. 등록 완료 여부를 확인해주세요"}
+        : {label:"등록 중",tone:"pending",detail:"Kling 서버 등록을 기다리는 중"};
     }else if(k.status==="failed"){
       formal={label:"등록 실패",tone:"warn",
         detail:k.msg ? String(k.msg).slice(0,130) : "다시 등록할 수 있어요"};
@@ -5655,6 +5684,7 @@
         '<button type="button" data-shared-register="'+esc(el.key)+'">'+
         (st==="new"?"Kling 정식 등록":"Kling 정식 다시 등록")+'</button>':'')+
       ((st!=="ready" && st!=="pending" && !(el.angles||[]).length)?'<p class="hint">정식 재등록에는 다른 각도 사진 1장 이상이 필요해요. 일반 참조는 사용 가능해요.</p>':'')+
+      elemRecoveryHtml(el)+
       (elemErrors[el.key]?'<p class="status bad">'+esc(elemErrors[el.key])+'</p>':'')+'</div>';
   }
   function sharedRefreshLive(key){
@@ -5741,8 +5771,16 @@
 
   view.addEventListener("click",function(ev){
     var edit=elemTarget(ev,"data-element-photos"),reg=elemTarget(ev,"data-shared-register");
+    var check=elemTarget(ev,"data-element-check"),pause=elemTarget(ev,"data-element-pause"),
+        resume=elemTarget(ev,"data-element-resume"),abandon=elemTarget(ev,"data-element-abandon"),
+        restore=elemTarget(ev,"data-element-restore");
     if(edit)elemPhotoEditorOpen(edit.dataset.elementPhotos);
     else if(reg)sharedRegister(reg.dataset.sharedRegister);
+    else if(check)elemManualCheck(check.dataset.elementCheck);
+    else if(pause)elemPauseByKey(pause.dataset.elementPause);
+    else if(resume)elemResumeByKey(resume.dataset.elementResume);
+    else if(abandon)elemAbandonByKey(abandon.dataset.elementAbandon);
+    else if(restore)elemRestoreByKey(restore.dataset.elementRestore);
   });
 
   // ---------- ⑨ 요소 관리 ----------
@@ -6023,6 +6061,7 @@
       (st==="new" || st==="failed" || st==="stale"
         ? '<button type="button" class="primary" data-elreg="'+key+'">'+(st==="new" ? "Kling 정식 등록" : "Kling 다시 등록")+'</button>' : '')+
       '<button type="button" class="ghost danger" data-eldel="'+key+'">지우기</button></div>';
+    h+=elemRecoveryHtml(el);
     if(elemErrors[el.key]) h+='<p class="status bad">'+esc(elemErrors[el.key])+'</p>';
     return h;
   }
