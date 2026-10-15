@@ -30,12 +30,12 @@ function grabVar(re,name){
 const FNS=[
   "peekSpec(proj, pid){","specOf(proj, pid){",
   "elemList(proj){","elemByKey(proj, key){","elemByName(proj, name){","elemPhotos(el){","elemSig(el){",
-  "elemNameProblem(proj, name, selfKey){","elemState(proj, el){",
+  "elemTaskId(k){","elemAutoPending(el){","elemArchivedJobs(el){","elemRecoverableJob(el){","elemRecoveryHtml(el){","elemNameProblem(proj, name, selfKey){","elemState(proj, el){",
   "mentionsOf(proj, pid, text, stage){","mentionedElements(proj, pid, text, stage){",
   "mentionWarnings(proj, pid, text, stage){","replaceMentions(proj, pid, text, stage, map){",
   "editRefPlan(proj, pid){",
   "renameMentions(proj, from, to){","elemUsage(proj, name){","elemRename(proj, key, name){",
-  "elemPhotoLocked(el){","elemDelete(key){","klingElementDelete(elementId){","elemRegister(key){","elemCheck(proj, key){",
+  "elemPhotoLocked(el){","elemDelete(key){","klingElementDelete(elementId){","elemPauseRegistration(proj,key,k,message){","elemRegister(key){","elemCheck(proj,key,options){",
   "elemAddPhotos(files, key){","elemDropPhoto(key, idx){","elemPendingKeys(proj){",
   "mentionOptions(proj, pid, stage, q){","mentionQuery(text, caret){","mentionInsert(text, start, caret, label){",
 ];
@@ -60,7 +60,7 @@ function sandbox(proj, replies){
     shrink:async(f)=>({blob:{size:10},w:f.w,h:f.h}),
     renderEdit:()=>{}, renderClipsSoon:()=>{}, ensureClipPoll:()=>{}, elemRefreshLive:()=>{ sb.live=(sb.live||0)+1; },
     toast:(m)=>toasts.push(m), confirm:(m)=>{ confirms.push(m); return sb.answer!==false; },
-    console:{error(){}},
+    console:{error(){},warn(){}},
   };
   vm.runInNewContext([
     grabVar(/  var EDIT = \{[\s\S]*?\n  \};\n/,"EDIT"),
@@ -276,9 +276,9 @@ test("register: one Kling request per tap, saved as pending, then ready (old Kli
   assert.equal(kid.kling.elementId,"9100");
   assert.equal(r.sb.elemState(proj,kid),"ready");
   assert.ok(r.sb.live>=1,"status line refreshed in place, even while a prompt is being typed");
-  assert.deepEqual(r.calls.map((c)=>c.body.action),["element_create","element_status","element_status","element_delete"]);
+  assert.deepEqual(r.calls.map((c)=>c.body.action),["element_create","element_status","element_status"],"old Kling ID is preserved instead of deleting it");
   assert.deepEqual(r.calls[1].body,{action:"element_status",projectId:P,operation:{taskId:"et2"}});
-  assert.equal(r.calls[3].body.elementId,"9001");
+  assert.ok(kid.retiredElementIds.includes("9001"),"previous official identity remains recoverable");
   assert.match(r.toasts.at(-1),/「아이」 Kling 등록이 끝났어요/);
 
   const f=sandbox(project(),[{status:200,body:{status:"error",message:"face not clear"}}]);
@@ -290,7 +290,7 @@ test("register: one Kling request per tap, saved as pending, then ready (old Kli
   assert.equal(d.kling.msg,"face not clear","shown on the card as 'Kling 등록 실패: face not clear'");
 });
 
-test("register: incomplete elements and request failures never leave a stuck pending state",async()=>{
+test("register: incomplete input and definite rejection unlock, uncertain work remains tracked",async()=>{
   const t=sandbox(project(),[{status:404,body:{}},{status:502,body:{error:"kling_auth",message:"Kling API 키가 거부됐어요."}}]);
   const proj=t.sb.current, dog=proj.elements[1];
   dog.desc=""; dog.angles=[];
@@ -303,16 +303,20 @@ test("register: incomplete elements and request failures never leave a stuck pen
   assert.ok(!dog.kling,"rolled back");
   assert.match(t.sb.elemErrors.k_dog,/lodging-reels-clip\)가 아직 배포되지 않았어요/);
   await t.sb.elemRegister("k_dog");
-  assert.match(t.sb.elemErrors.k_dog,/Kling 등록 요청 실패: Kling API 키가 거부됐어요\./);
+  assert.equal(dog.kling.status,"pending");
+  assert.equal(dog.kling.needsCheck,true);
+  assert.match(dog.kling.notice,/등록 요청 결과를 확인하지 못했어요/);
 
-  // 작업 번호 없이 2분, 번호가 있어도 30분이면 실패로 정리
+  // 미확인 접수는 작업 ID가 없거나 30분을 넘겨도 실패로 없애지 않는다.
   dog.kling={status:"pending",taskId:null,sig:"s",at:Date.now()-121000};
   await t.sb.elemCheck(proj,"k_dog");
-  assert.equal(dog.kling.status,"failed");
+  assert.equal(dog.kling.status,"pending");
+  assert.equal(dog.kling.needsCheck,true);
   dog.kling={status:"pending",taskId:"x",sig:"s",at:Date.now()-31*60*1000};
   await t.sb.elemCheck(proj,"k_dog");
-  assert.equal(dog.kling.status,"failed");
-  assert.match(dog.kling.msg,/30분/);
+  assert.equal(dog.kling.status,"pending");
+  assert.equal(dog.kling.taskId,"x");
+  assert.equal(dog.kling.needsCheck,true);
 });
 
 test("@ list: typing @ offers elements and photos, picking writes [이름]",()=>{
@@ -357,7 +361,7 @@ test("screen wiring: panel, row warnings, @ list and live updates are bound; dat
   const rm=grab("removeProject(p){");
   assert.match(rm,/el\.front\]\.concat\(el\.angles/);
   assert.match(rm,/klingElementDelete\(el\.kling\.elementId\)/);
-  assert.match(grab("clipPollTick(){"),/elemCheck\(proj, k\)/,"element registration is checked on the clip timer");
+  assert.match(grab("clipPollTick(){"),/elemCheck\(w\.proj,w\.key\)/,"per-project element registration is polled on the clip timer");
 });
 
 
