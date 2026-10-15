@@ -3199,6 +3199,8 @@
   function drawClipCut(g,video,text,elapsed,duration){
     // 실제 영상 길이 이후에는 마지막 프레임 고정이나 반복 없이 마젠타(#FF00FF).
     if(elapsed>=duration || video.ended || video.readyState<2 || video.seeking){
+      // ⑩ 미리보기는 분홍색으로 상태를 보여주지만, ⑪ 녹화는 오류로 중단한다.
+      if(arguments[5]===true)throw new Error("Kling 영상 프레임이 아직 준비되지 않았거나 길이가 부족해 분홍 화면이 나올 수 있어요. ⑩ 영상 컷 경계를 확인해주세요.");
       drawMagentaCut(g,text);return;
     }
     drawFill(g,video,1,0.5,0.5);
@@ -3431,6 +3433,8 @@
       st("⑥ 후처리 음성 파일이 없어요.",true);return;
     }
     if(!photos.length){ st("⑧ 사진 소스를 먼저 올려주세요.",true); return; }
+    var gate=videoRenderGuard(current);
+    if(!gate.ok){st(gate.message,true);return;}
     if(!window.MediaRecorder){ st("이 브라우저는 영상 녹화를 지원하지 않아요.",true); return; }
     var mime=pickMime();
     if(!mime){ st("이 브라우저가 만들 수 있는 영상 형식이 없어요.",true); return; }
@@ -3445,7 +3449,7 @@
     // ⑩의 선택은 사진 ID 그대로 유지한다. 유효한 ⑨ 영상이 있으면 ⑪에서만 MP4를 우선한다.
     var renderMap=ensureMap(), selectedPhotos={};
     renderMap.forEach(function(pi){ selectedPhotos[pi]=true; });
-    var imgs=[], clipVideos=[], coverCanvas=null;
+    var imgs=[], clipVideos=[], coverCanvas=null, actualClipDurations={};
     // ⑩ 편집모드에서 고친 타임라인이 있으면 그 블록(V1·V2)대로 그린다. 없으면 아래 ⑩ 배치 그대로.
     var etl=tlSaved(current), tlMedia={}, tsegs=etl ? tlSegments(current) : null;
     var tlLive={video:null, key:"", drift:0.45, fail:function(e){
@@ -3461,6 +3465,7 @@
           if(tlFiles[fp]==="video"){
             var tv=await loadClipVideo(blobUrl(fp));
             clipVideos.push({video:tv, duration:tv.duration});
+            actualClipDurations[fp]=tv.duration;
             tlMedia[fp]=tv;
           }else tlMedia[fp]=await loadImg(blobUrl(fp));
         }
@@ -3470,6 +3475,7 @@
         if(clip){
           var video=await loadClipVideo(blobUrl(clip.id));
           clipVideos[i]={video:video,duration:video.duration};
+          actualClipDurations[clip.id]=video.duration;
           imgs.push(video);
         }else{
           imgs.push(await loadImg(blobUrl(srcId(photos[i]))));
@@ -3504,6 +3510,15 @@
         releaseClipVideos(clipVideos);
         return;
       }
+    }
+
+    // 실제 Kling 동영상 길이·후처리 음성 길이로 다시 검사한다(녹화 시작 전).
+    var actualVoiceSeconds=narBuf ? narBuf.duration : Number(current.ttsDuration);
+    gate=videoRenderGuard(current,actualVoiceSeconds,actualClipDurations);
+    if(!gate.ok){
+      if(actx)try{await actx.close();}catch(e){}
+      releaseClipVideos(clipVideos);
+      st(gate.message,true);return;
     }
 
     var cv=document.createElement("canvas");
@@ -3587,7 +3602,7 @@
             if(el<coverMs){ g.drawImage(coverCanvas,0,0,VIDEO.w,VIDEO.h); }
             else if(etl){
               var tp=tlFramePlan(current, etl, el/1000, tsegs);
-              tlDrawLive(g, tp, tp.seg>=0 ? (cuts[tp.seg]||"") : "", tp.path ? tlMedia[tp.path] : null, tlLive);
+              tlDrawLive(g, tp, tp.seg>=0 ? (cuts[tp.seg]||"") : "", tp.path ? tlMedia[tp.path] : null, tlLive, true);
             }
             else{
               var rel=(el-coverMs)/1000, lo=0, hi=N-1;
@@ -3621,7 +3636,7 @@
                   // 브라우저 디코딩이 실제 발화 시간과 어긋나면 타임라인을 따라간다.
                   clip.video.currentTime=Math.min(elapsed,Math.max(0,clip.duration-0.04));
                 }
-                drawClipCut(g,clip.video,cuts[idx]||"",elapsed,clip.duration);
+                drawClipCut(g,clip.video,cuts[idx]||"",elapsed,clip.duration,true);
               }else{
                 if(activeVideo){activeVideo.pause();activeVideo=null;activeRun=-1;}
                 drawCut(g,imgs[pi],cuts[idx]||"",k);
@@ -3984,7 +3999,7 @@
       else if(!v.seeking && Math.abs(v.currentTime-plan.elapsed)>(live.drift||0.45)){
         try{ v.currentTime=Math.min(plan.elapsed, Math.max(0, v.duration-0.04)); }catch(x){}
       }
-      drawClipCut(g, v, text, plan.elapsed, v.duration);
+      drawClipCut(g, v, text, plan.elapsed, v.duration,arguments[5]===true);
       return;
     }
     if(live.video){ live.video.pause(); live.video=null; live.key=""; }
@@ -3993,6 +4008,7 @@
       drawCutText(g, text);
       return;
     }
+    if(arguments[5]===true)throw new Error("⑩ 타임라인에 빈 화면이나 불러오지 못한 미디어가 있어요. 영상 블록을 확인해주세요.");
     drawMagentaCut(g, text);
   }
 
@@ -7249,7 +7265,7 @@
     var mv=document.getElementById("mkvideo");
     if(mv) mv.addEventListener("click",async function(){
       mv.disabled=true; try{ await makeVideo(); } finally{
-        var b=document.getElementById("mkvideo"); if(b) b.disabled=false; }
+        var b=document.getElementById("mkvideo"); if(b) b.disabled=!videoRenderGuard(current).ok; }
     });
 
     var refill=document.getElementById("refill");
