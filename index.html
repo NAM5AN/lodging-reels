@@ -4837,7 +4837,7 @@
   //                         kling:{ status:"pending"|"ready"|"failed", taskId, elementId, sig, at, msg } }]
   var ELEM = { nameMax:20, descMax:100, maxAngles:3, minSide:300, maxRatio:2.5, giveUpMs:30*60*1000 };
   // elemDrafts: 규칙에 안 맞아 반영하지 못한 이름(칸에 그대로 남겨 고치게 한다). 저장하지 않는다.
-  var elemInflight={}, elemErrors={}, elemDrafts={};
+  var elemInflight={}, elemErrors={}, elemDrafts={}, elemMisses={};
 
   // 등록 완료된 공통 요소가 우선한다. 최초 등록한 숙소의 기존 사본은 중복 표시하지 않는다.
   function elemList(proj){
@@ -4868,7 +4868,7 @@
   function elemArchivedJobs(el){return (el && el.klingHistory)||[];}
   function elemRecoverableJob(el){
     return elemArchivedJobs(el).slice().reverse().find(function(k){return elemTaskId(k);}) ||
-      (el && el.kling && el.kling.status==="failed" && elemTaskId(el.kling)?el.kling:null);
+      (el && el.kling && el.kling.status==="failed" && !el.kling.confirmedFailed && elemTaskId(el.kling)?el.kling:null);
   }
   function elemRecoveryHtml(el){
     var k=el.kling||{},key=esc(el.key),h="";
@@ -5365,33 +5365,52 @@
   }
 
   function ensureClipPoll(){
-    if(!clipAutoJobIds(current).length && !elemPendingKeys(current).length)return;
+    if(!clipAutoJobIds(current).length && !elemPendingWork().length)return;
     if(!clipPollTimer)clipPollTimer=setTimeout(clipPollTick,CLIP.pollMs);
     if(!clipClock)clipClock=setInterval(clipClockTick,1000);
   }
   function clipClockTick(){
     var ids=clipAutoJobIds(current);
-    if(!ids.length && !elemPendingKeys(current).length){clearInterval(clipClock);clipClock=null;return;}
+    if(!ids.length && !elemPendingWork().length){clearInterval(clipClock);clipClock=null;return;}
     ids.forEach(function(pid){
       var el=view.querySelector('[data-cliptime="'+pid.replace(/"/g,'\\"')+'"]');
       if(el)el.textContent=clipElapsed(current.clipJobs[pid]);
     });
   }
   function elemPendingKeys(proj){
-    return elemList(proj).filter(function(el){return el.kling && el.kling.status==="pending";}).map(function(el){return el.key;});
+    return elemList(proj).filter(elemAutoPending).map(function(el){return el.key;});
+  }
+  // 숙소를 열지 않고 새로고침해도 프로젝트별 요소와 계정 공통 요소 등록 확인을 재개한다.
+  // 동일 요소를 숙소별 원본 사본과 공통 보관본에서 두 번 조회하지 않는다.
+  function elemPendingWork(){
+    var todo=[],globals=typeof sharedElements==="undefined"?[]:sharedElements;
+    globals.filter(elemAutoPending).forEach(function(el){todo.push({key:el.key,global:true,proj:null});});
+    var ps=(typeof projects==="undefined"?[]:projects).slice();
+    if(current){
+      var index=ps.findIndex(function(p){return p.id===current.id;});
+      if(index<0)ps.push(current);else ps[index]=current;
+    }
+    ps.forEach(function(proj){
+      (proj.elements||[]).filter(elemAutoPending).forEach(function(el){
+        if(globals.some(function(g){return g.sourceProject===proj.id&&g.sourceKey===el.key || g.name&&g.name===el.name;}))return;
+        if(typeof sharedDeletedKeys!=="undefined" &&
+           sharedDeletedKeys.indexOf("shared_"+proj.id+"_"+el.key)>=0)return;
+        todo.push({key:el.key,global:false,proj:proj});
+      });
+    });
+    return todo;
   }
   async function clipPollTick(){
     clipPollTimer=null;
     var proj=current;
     if(!uid)return;
-    var ids=clipAutoJobIds(proj),keys=elemPendingKeys(proj);
-    if(!ids.length&&!keys.length)return;
+    var ids=clipAutoJobIds(proj),work=elemPendingWork();
+    if(!ids.length&&!work.length)return;
     await Promise.all(ids.map(function(pid){return clipCheck(proj,pid);})
-      .concat(keys.map(function(k){
-        var el=elemByKey(proj,k);
-        return el&&el.scope==="global"?sharedCheck(k):elemCheck(proj, k);
+      .concat(work.map(function(w){
+        return w.global ? sharedCheck(w.key) : elemCheck(w.proj,w.key);
       })));
-    if(clipAutoJobIds(current).length||elemPendingKeys(current).length)ensureClipPoll();
+    if(clipAutoJobIds(current).length||elemPendingWork().length)ensureClipPoll();
   }
 
   // 일정 시간 경과 후에도 '완료'를 먼저 조회한다. 아직 처리 중이면 작업 ID를 보존해 수동 확인할 수 있게 한다.
@@ -7010,7 +7029,7 @@
     Array.prototype.forEach.call(view.querySelectorAll("video[data-clipplay]"),function(v){
       v.addEventListener("click",function(){ if(v.paused) v.play().catch(function(){}); else v.pause(); });
     });
-    if(clipJobIds(current).length) ensureClipPoll();
+    if(clipJobIds(current).length || elemPendingWork().length) ensureClipPoll();
 
     var rm=document.getElementById("remap");
     if(rm) rm.addEventListener("click",function(){
@@ -7251,6 +7270,8 @@
     await checkFonts();
     capNote="";
     renderList();
+    // 메인에서 이미 저장된 숙소별·계정 공통 요소도 완료 상태 확인을 재개한다.
+    ensureClipPoll();
     document.getElementById("where").textContent="계정 저장";
     // 예전에 숙소별로 등록해 둔 정식 요소도 새 Kling 호출 없이 계정 공통 목록으로 옮긴다.
     syncExistingSharedElements().then(function(){
