@@ -5227,7 +5227,7 @@
       if(awaiting)h+='<p class="status bad">'+esc(job.notice||"기존 작업 ID를 보존했어요. 완료 여부 확인 전 재생성하지 마세요.")+'</p>';
     }
     if(!job && old.length)h+='<p class="status bad">이전에 추적을 중단한 작업 '+old.length+
-      '건이 보관돼 있어요. 다시 만들면 Kling에서 별도 비용이 발생할 수 있어요.</p>';
+      '건이 보관돼 있어요. 다시 만들면 Kling에서 중복 비용이 발생할 수 있어요.</p>';
     if(cs.clip){
       var c=cs.clip, meta=[(c.dur||CLIP.dur)+"초 · 9:16"];
       if(c.size) meta.push((c.size/1048576).toFixed(1)+"MB");
@@ -5360,7 +5360,7 @@
     await Promise.all(ids.map(function(pid){return clipCheck(proj,pid);})
       .concat(keys.map(function(k){
         var el=elemByKey(proj,k);
-        return el&&el.scope==="global"?sharedCheck(k):elemCheck(proj,k);
+        return el&&el.scope==="global"?sharedCheck(k):elemCheck(proj, k);
       })));
     if(clipAutoJobIds(current).length||elemPendingKeys(current).length)ensureClipPoll();
   }
