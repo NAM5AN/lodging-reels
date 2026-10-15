@@ -3337,7 +3337,9 @@
       media=plan.kind==="video"?await loadClipVideo(blobUrl(plan.path))
                                  :plan.kind==="magenta"?null:await loadImg(blobUrl(plan.path));
       if(plan.kind==="video" && plan.elapsed<media.duration)await seekClipFrame(media,plan.elapsed);
-      drawSelectedCover(canvas.getContext("2d"),plan,media,proj);
+      var frameLabel=drawSelectedCover(canvas.getContext("2d"),plan,media,proj);
+      // 커버로 고른 Kling 프레임이 디코딩 중이거나 원본 길이를 넘은 경우도 내보내지 않는다.
+      if(frameLabel==="마젠타")throw new Error("썸네일로 고른 프레임이 분홍색 화면이에요. ⑪ 프레임 위치를 다른 사진·영상 구간으로 바꿔주세요.");
       return canvas;
     }finally{
       if(plan.kind==="video" && media)releaseClipVideos([{video:media}]);
