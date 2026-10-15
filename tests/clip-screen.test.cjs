@@ -249,7 +249,7 @@ function runner(replies){
     },
     persist:async(p)=>{ persisted.push(plain(p)); return true; },
     storeDelete:async(id)=>{ deleted.push(id); },
-    renderClipsSoon:()=>{}, ensureClipPoll:()=>{}, toast:(m)=>toasts.push(m), console:{error(){}},
+    renderClipsSoon:()=>{}, ensureClipPoll:()=>{}, toast:(m)=>toasts.push(m), console:{error(){},warn(){}},
   });
   vm.runInNewContext([
       "clipJobIds(proj){","clipTaskId(job){","clipAutoJobIds(proj){","clipOldJobs(proj,pid){",
@@ -333,7 +333,7 @@ test("check: pending waits, completed swaps in the new video and deletes the old
   proj2.clipJobs={[ORIGINAL]:{op:{taskId:"t2"},at:Date.now()}};
   await e.sb.clipCheck(proj2,ORIGINAL);
   assert.equal(proj2.clipJobs[ORIGINAL],undefined);
-  assert.match(e.sb.clipErrors[ORIGINAL],/1번 영상 만들기 실패: content risk/);
+  assert.match(e.sb.clipErrors[ORIGINAL],/1번 영상 Kling 생성 실패\(확인됨\): content risk/);
 });
 
 test("check: transient errors keep waiting, a stopped job's result is thrown away, old jobs give up",async()=>{
@@ -345,12 +345,12 @@ test("check: transient errors keep waiting, a stopped job's result is thrown awa
   assert.ok(proj.clipJobs[ORIGINAL],"503 and network errors do not cancel the wait");
   assert.equal(t.sb.clipMisses[ORIGINAL],2);
 
-  // 응답을 기다리는 사이 '기다리기 그만' → 도착한 결과 파일은 지운다
+  // 결과 확인 중 사용자가 추적을 보관한 경우, 나중에 복구할 수 있으므로 완료 파일을 지우지 않는다
   let release;
   const gate=new Promise((r)=>{ release=r; });
   const s=runner([]);
   s.sb.api=async()=>{ await gate; return {ok:true,status:200,text:async()=>JSON.stringify({status:"completed",id:"late.mp4"})}; };
-  vm.runInNewContext(grab("clipCheck(proj, pid){"),s.sb);
+  vm.runInNewContext(grab("clipCheck(proj,pid,options){"),s.sb);
   const proj2=project();
   proj2.clipJobs={[ORIGINAL]:{op:{taskId:"t9"},at:Date.now()}};
   const pending=s.sb.clipCheck(proj2,ORIGINAL);
@@ -358,7 +358,7 @@ test("check: transient errors keep waiting, a stopped job's result is thrown awa
   release();
   await pending;
   assert.equal((proj2.clips||{})[ORIGINAL],undefined);
-  assert.deepEqual(s.deleted,["late.mp4"]);
+  assert.deepEqual(s.deleted,[],"late result is retained for potential archive recovery");
 
   const g=runner([{status:200,body:{status:"pending",kling:"processing"}}]);
   const proj3=project();
