@@ -2044,11 +2044,11 @@
     var renderGate=videoRenderGuard(current);
     var h='<h2>⑪ 영상 만들기</h2><div class="card">';
     h+='<p class="hint" style="margin-bottom:10px">자막은 ⑦에서 계산한 발화 시각에 표시돼요. ⑩에서 선택한 사진에 유효한 ⑨ Kling 영상이 있으면 MP4를 우선 사용하고, 없거나 가공 사진이 변경됐으면 사진을 사용해요. '+
-       '같은 사진의 연속 컷은 영상을 이어 재생하며, 클립 길이가 부족한 부분은 반복 없이 마젠타(#FF00FF) 단색으로 표시하고 자막은 유지해요. Kling 오디오는 넣지 않아요.</p>';
-    if(tlSaved(current)) h+='<p class="hint" style="margin:-4px 0 10px;color:var(--accent)">⑩ 편집모드에서 고친 타임라인(V1·V2)대로 만들어요. 빈 구간은 마젠타예요.</p>';
+       '같은 사진의 연속 컷은 영상을 이어 재생하며, 클립 길이가 부족한 부분은 반복 없이 마젠타(#FF00FF) 단색으로 표시하고 자막은 유지해요. 단, 최종 영상 제작 전에 분홍 빈 구간이 있으면 제작을 차단해요. Kling 오디오는 넣지 않아요.</p>';
+    if(tlSaved(current)) h+='<p class="hint" style="margin:-4px 0 10px;color:var(--accent)">⑩ 편집모드에서 고친 타임라인(V1·V2)대로 만들어요. 빈 구간의 마젠타 화면을 메워야 영상 제작이 가능해요.</p>';
     h+=trackRow({k:"bgm",h:"배경음악",hint:"영상 길이에 맞춰 반복 재생돼요."});
     h+='<div class="tbox" id="thumbbox"><h3 style="margin:0 0 8px">썸네일 프레임 선택</h3>'+
-       '<p class="hint" style="margin:0 0 8px">⑪ 전체 영상에서 원하는 시점을 고르세요. Kling 영상·사진·마젠타 구간 모두 선택할 수 있어요. '+
+       '<p class="hint" style="margin:0 0 8px">⑪ 전체 영상에서 원하는 시점을 고르세요. Kling 영상·사진·마젠타 구간 모두 미리볼 수 있지만, 마젠타가 남으면 최종 영상 제작을 차단해요. '+
        '검은 반투명 배경과 커버 타이틀은 미리보기·저장 JPG·완성 영상 첫 커버에 똑같이 적용돼요. 본문 자막은 들어가지 않아요.</p>';
     if(timelineReady() && (current.photos||[]).length){
       var total=thumbnailDuration(current), selected=thumbnailSelectedTime(current);
