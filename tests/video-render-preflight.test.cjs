@@ -215,6 +215,32 @@ test("edited timeline magenta or unloaded media similarly aborts recording",()=>
   assert.throws(()=>h.tlDrawLive(g,{kind:"video",block:{id:"b"},track:0,elapsed:0.2,seg:1},"",null,live,true),/빈 화면/);
 });
 
+test("the selected cover's pink video frame aborts export, while a decoded frame is accepted",async()=>{
+  const video={duration:5};
+  let label="마젠타", released=0,loaded=0,seeked=0;
+  const ctx=vm.createContext({
+    VIDEO:VID,Math,Number,
+    thumbnailFramePlan:()=>({kind:"video",path:V(1),elapsed:1,clipDuration:5}),
+    thumbnailSelectedTime:()=>1,
+    document:{createElement:()=>({width:0,height:0,getContext:()=>({})})},
+    blobUrl:x=>x,
+    loadClipVideo:async()=>{loaded++;return video;},
+    seekClipFrame:async()=>{seeked++;},
+    drawSelectedCover:()=>label,
+    releaseClipVideos:()=>{released++}
+  });
+  vm.runInContext(grab("makeSelectedCoverCanvas(proj){"),ctx);
+  await assert.rejects(()=>ctx.makeSelectedCoverCanvas({}),/썸네일로 고른 프레임이 분홍색/);
+  assert.equal(released,1,"video resources are released even if export is blocked");
+  label="Kling 영상";
+  const canvas=await ctx.makeSelectedCoverCanvas({});
+  assert.equal(canvas.width,1080);
+  assert.equal(canvas.height,1920);
+  assert.equal(loaded,2);
+  assert.equal(seeked,2);
+  assert.equal(released,2);
+});
+
 test("existing editor controls and video format remain unchanged",()=>{
   const edit=grab("edOpen(){"),render=grab("makeVideo(){");
   assert.match(edit,/edRenderTimeline/);
