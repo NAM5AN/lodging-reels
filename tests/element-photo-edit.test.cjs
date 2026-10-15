@@ -22,8 +22,8 @@ function harness(el=element(),opt={}){
  let serial=0;
  const proj=project(el.scope==='global'?null:el);
  const ctx=vm.createContext({uid:UID,current:proj,projects:[proj],sharedElements:el.scope==='global'?[el]:[],sharedDeletedKeys:[],
-  sharedLoaded:true,sharedSyncBusy:{},sharedLoadError:'',elemPhotoBusy:{},elemInflight:{},elemErrors:{},elemDrafts:{},
-  clipPollTimer:null,console:{error(){},warn(){}},ELEM:{nameMax:20,descMax:100,maxAngles:3,minSide:300,maxRatio:2.5,giveUpMs:1800000},
+  sharedLoaded:true,sharedSyncBusy:{},sharedLoadError:'',elemPhotoBusy:{},elemInflight:{},elemErrors:{},elemDrafts:{},elemMisses:{},
+  clipPollTimer:null,clipAutoJobIds:()=>[],console:{error(){},warn(){}},ELEM:{nameMax:20,descMax:100,maxAngles:3,minSide:300,maxRatio:2.5,giveUpMs:1800000},
   EDIT:{maxRefs:15},CLIP:{maxInputs:7,minSide:300,maxRatio:2.5},MENTION_RE:/\[([^\[\]\n]{1,30})\]/g,
   SUPA:{url:'https://mock.test',sharedTable:'shared'},FN:{clip:'https://mock.test/clip'},
   esc:x=>String(x??'').replace(/</g,'&lt;'),toast:x=>toasts.push(x),answer:true,confirm:()=>ctx.answer,
@@ -52,8 +52,8 @@ function harness(el=element(),opt={}){
   }
  });
  const fns=['peekSpec','elemList','elemByKey','elemByName','elemPhotos','elemSig','elemNameProblem','elemState','elemStatusDetails','elemStatusRows',
- 'persistSharedElement','loadSharedElements','publishSharedElement','elemPhotoLocked','elemPreparedPhoto','elemSavePhotoDraft',
- 'sharedRegistrationHtml','sharedRegister','sharedCheck','elemPendingKeys','clipJobIds','clipPollTick',
+ 'elemTaskId','elemAutoPending','elemArchivedJobs','elemRecoverableJob','elemRecoveryHtml','persistSharedElement','loadSharedElements','publishSharedElement','elemPhotoLocked','elemPreparedPhoto','elemSavePhotoDraft',
+ 'sharedRegistrationHtml','sharedPauseRegistration','sharedRegister','sharedCheck','elemPendingKeys','elemPendingWork','clipJobIds','clipPollTick',
  'mentionsOf','mentionedElements','replaceMentions','editRefPlan','clipPlan','clipHead','clipPromptText','clipDuration','clipRequest','elemDropPhoto'];
  vm.runInContext(fns.map(grab).join('\n'),ctx);
  return {ctx,el,proj,db,calls,uploaded,removed,saves,toasts};
@@ -199,10 +199,10 @@ test('reload retains pending/failed/stale official-origin entries; resumes pendi
  await t.ctx.loadSharedElements();assert.equal(t.ctx.sharedElements.length,1);assert.equal(t.ctx.sharedElements[0].kling.status,'failed');
 });
 
-test('timeout without task ID marks failure without automatically resubmitting a paid create',async()=>{
+test('timeout without task ID pauses registration without automatically resubmitting a paid create',async()=>{
  const t=harness();t.el.kling={...t.el.kling,status:'pending',at:Date.now()-121000,taskId:null};
  t.db.set(t.el.key,plain(t.el));await t.ctx.sharedCheck(t.el.key);
- assert.equal(t.ctx.sharedElements[0].kling.status,'failed');assert.ok(!t.calls.some(c=>c.body?.action));
+ assert.equal(t.ctx.sharedElements[0].kling.status,'pending');assert.equal(t.ctx.sharedElements[0].kling.needsCheck,true);assert.ok(!t.calls.some(c=>c.body?.action));
 });
 
 test('UI has draft save/cancel, per-photo replacement, primary selection, account-wide warning and mobile tap targets',()=>{
