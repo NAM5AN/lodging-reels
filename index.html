@@ -2041,13 +2041,14 @@
   }
 
   function videoSection(){
+    var renderGate=videoRenderGuard(current);
     var h='<h2>⑪ 영상 만들기</h2><div class="card">';
     h+='<p class="hint" style="margin-bottom:10px">자막은 ⑦에서 계산한 발화 시각에 표시돼요. ⑩에서 선택한 사진에 유효한 ⑨ Kling 영상이 있으면 MP4를 우선 사용하고, 없거나 가공 사진이 변경됐으면 사진을 사용해요. '+
-       '같은 사진의 연속 컷은 영상을 이어 재생하며, 클립 길이가 부족한 부분은 반복 없이 마젠타(#FF00FF) 단색으로 표시하고 자막은 유지해요. Kling 오디오는 넣지 않아요.</p>';
-    if(tlSaved(current)) h+='<p class="hint" style="margin:-4px 0 10px;color:var(--accent)">⑩ 편집모드에서 고친 타임라인(V1·V2)대로 만들어요. 빈 구간은 마젠타예요.</p>';
+       '같은 사진의 연속 컷은 영상을 이어 재생하며, 클립 길이가 부족한 부분은 반복 없이 마젠타(#FF00FF) 단색으로 표시하고 자막은 유지해요. 단, 최종 영상 제작 전에 분홍 빈 구간이 있으면 제작을 차단해요. Kling 오디오는 넣지 않아요.</p>';
+    if(tlSaved(current)) h+='<p class="hint" style="margin:-4px 0 10px;color:var(--accent)">⑩ 편집모드에서 고친 타임라인(V1·V2)대로 만들어요. 빈 구간의 마젠타 화면을 메워야 영상 제작이 가능해요.</p>';
     h+=trackRow({k:"bgm",h:"배경음악",hint:"영상 길이에 맞춰 반복 재생돼요."});
     h+='<div class="tbox" id="thumbbox"><h3 style="margin:0 0 8px">썸네일 프레임 선택</h3>'+
-       '<p class="hint" style="margin:0 0 8px">⑪ 전체 영상에서 원하는 시점을 고르세요. Kling 영상·사진·마젠타 구간 모두 선택할 수 있어요. '+
+       '<p class="hint" style="margin:0 0 8px">⑪ 전체 영상에서 원하는 시점을 고르세요. Kling 영상·사진·마젠타 구간 모두 미리볼 수 있지만, 마젠타가 남으면 최종 영상 제작을 차단해요. '+
        '검은 반투명 배경과 커버 타이틀은 미리보기·저장 JPG·완성 영상 첫 커버에 똑같이 적용돼요. 본문 자막은 들어가지 않아요.</p>';
     if(timelineReady() && (current.photos||[]).length){
       var total=thumbnailDuration(current), selected=thumbnailSelectedTime(current);
@@ -2063,8 +2064,10 @@
       h+='<p class="hint">전체 영상 프레임을 고르려면 ⑦ 음성 싱크와 ⑧ 사진을 먼저 준비해 주세요.</p>';
     }
     h+='</div>'+
-       '<button type="button" class="primary" id="mkvideo" style="width:100%;margin-top:12px">영상 만들기</button>'+
-       '<p class="status" id="renderstat"></p></div>';
+       '<button type="button" class="primary" id="mkvideo" style="width:100%;margin-top:12px"'+
+         (renderGate.ok?'':' disabled title="분홍색 빈 화면을 먼저 메워주세요"')+'>영상 만들기</button>'+
+       '<p class="status'+(renderGate.ok?'':' bad')+'" id="renderstat" role="status" aria-live="polite">'+
+         esc(renderGate.message)+'</p></div>';
     return h;
   }
 
@@ -3196,6 +3199,8 @@
   function drawClipCut(g,video,text,elapsed,duration){
     // 실제 영상 길이 이후에는 마지막 프레임 고정이나 반복 없이 마젠타(#FF00FF).
     if(elapsed>=duration || video.ended || video.readyState<2 || video.seeking){
+      // ⑩ 미리보기는 분홍색으로 상태를 보여주지만, ⑪ 녹화는 오류로 중단한다.
+      if(arguments[5]===true)throw new Error("Kling 영상 프레임이 아직 준비되지 않았거나 길이가 부족해 분홍 화면이 나올 수 있어요. ⑩ 영상 컷 경계를 확인해주세요.");
       drawMagentaCut(g,text);return;
     }
     drawFill(g,video,1,0.5,0.5);
@@ -3332,7 +3337,9 @@
       media=plan.kind==="video"?await loadClipVideo(blobUrl(plan.path))
                                  :plan.kind==="magenta"?null:await loadImg(blobUrl(plan.path));
       if(plan.kind==="video" && plan.elapsed<media.duration)await seekClipFrame(media,plan.elapsed);
-      drawSelectedCover(canvas.getContext("2d"),plan,media,proj);
+      var frameLabel=drawSelectedCover(canvas.getContext("2d"),plan,media,proj);
+      // 커버로 고른 Kling 프레임이 디코딩 중이거나 원본 길이를 넘은 경우도 내보내지 않는다.
+      if(frameLabel==="마젠타")throw new Error("썸네일로 고른 프레임이 분홍색 화면이에요. ⑪ 프레임 위치를 다른 사진·영상 구간으로 바꿔주세요.");
       return canvas;
     }finally{
       if(plan.kind==="video" && media)releaseClipVideos([{video:media}]);
@@ -3428,6 +3435,8 @@
       st("⑥ 후처리 음성 파일이 없어요.",true);return;
     }
     if(!photos.length){ st("⑧ 사진 소스를 먼저 올려주세요.",true); return; }
+    var gate=videoRenderGuard(current);
+    if(!gate.ok){st(gate.message,true);return;}
     if(!window.MediaRecorder){ st("이 브라우저는 영상 녹화를 지원하지 않아요.",true); return; }
     var mime=pickMime();
     if(!mime){ st("이 브라우저가 만들 수 있는 영상 형식이 없어요.",true); return; }
@@ -3442,7 +3451,7 @@
     // ⑩의 선택은 사진 ID 그대로 유지한다. 유효한 ⑨ 영상이 있으면 ⑪에서만 MP4를 우선한다.
     var renderMap=ensureMap(), selectedPhotos={};
     renderMap.forEach(function(pi){ selectedPhotos[pi]=true; });
-    var imgs=[], clipVideos=[], coverCanvas=null;
+    var imgs=[], clipVideos=[], coverCanvas=null, actualClipDurations={};
     // ⑩ 편집모드에서 고친 타임라인이 있으면 그 블록(V1·V2)대로 그린다. 없으면 아래 ⑩ 배치 그대로.
     var etl=tlSaved(current), tlMedia={}, tsegs=etl ? tlSegments(current) : null;
     var tlLive={video:null, key:"", drift:0.45, fail:function(e){
@@ -3458,6 +3467,7 @@
           if(tlFiles[fp]==="video"){
             var tv=await loadClipVideo(blobUrl(fp));
             clipVideos.push({video:tv, duration:tv.duration});
+            actualClipDurations[fp]=tv.duration;
             tlMedia[fp]=tv;
           }else tlMedia[fp]=await loadImg(blobUrl(fp));
         }
@@ -3467,6 +3477,7 @@
         if(clip){
           var video=await loadClipVideo(blobUrl(clip.id));
           clipVideos[i]={video:video,duration:video.duration};
+          actualClipDurations[clip.id]=video.duration;
           imgs.push(video);
         }else{
           imgs.push(await loadImg(blobUrl(srcId(photos[i]))));
@@ -3501,6 +3512,15 @@
         releaseClipVideos(clipVideos);
         return;
       }
+    }
+
+    // 실제 Kling 동영상 길이·후처리 음성 길이로 다시 검사한다(녹화 시작 전).
+    var actualVoiceSeconds=narBuf ? narBuf.duration : Number(current.ttsDuration);
+    gate=videoRenderGuard(current,actualVoiceSeconds,actualClipDurations);
+    if(!gate.ok){
+      if(actx)try{await actx.close();}catch(e){}
+      releaseClipVideos(clipVideos);
+      st(gate.message,true);return;
     }
 
     var cv=document.createElement("canvas");
@@ -3584,7 +3604,7 @@
             if(el<coverMs){ g.drawImage(coverCanvas,0,0,VIDEO.w,VIDEO.h); }
             else if(etl){
               var tp=tlFramePlan(current, etl, el/1000, tsegs);
-              tlDrawLive(g, tp, tp.seg>=0 ? (cuts[tp.seg]||"") : "", tp.path ? tlMedia[tp.path] : null, tlLive);
+              tlDrawLive(g, tp, tp.seg>=0 ? (cuts[tp.seg]||"") : "", tp.path ? tlMedia[tp.path] : null, tlLive, true);
             }
             else{
               var rel=(el-coverMs)/1000, lo=0, hi=N-1;
@@ -3618,7 +3638,7 @@
                   // 브라우저 디코딩이 실제 발화 시간과 어긋나면 타임라인을 따라간다.
                   clip.video.currentTime=Math.min(elapsed,Math.max(0,clip.duration-0.04));
                 }
-                drawClipCut(g,clip.video,cuts[idx]||"",elapsed,clip.duration);
+                drawClipCut(g,clip.video,cuts[idx]||"",elapsed,clip.duration,true);
               }else{
                 if(activeVideo){activeVideo.pause();activeVideo=null;activeRun=-1;}
                 drawCut(g,imgs[pi],cuts[idx]||"",k);
@@ -3891,6 +3911,71 @@
     if(end-at>0.005) out.push({start:at, end:end});
     return out.filter(function(g){ return g.end-g.start>0.005; });
   }
+  // ⑪ 안전 검사: 모든 블록의 경계와 영상 원본 끝을 사용해 빈 화면을 찾는다.
+  // 단순 프레임 샘플링은 아주 짧은 마젠타 구간을 놓치므로 하지 않는다.
+  function videoOutputGaps(proj, voiceEnd, durations){
+    if(!proj || !(proj.photos||[]).length || !(proj.cutTimeline||[]).length)return [];
+    var end=Number(voiceEnd);
+    if(!Number.isFinite(end) || end<=0)end=tlVoiceEnd(proj);
+    if(!(end>0))return [];
+    var saved=!!tlSaved(proj),tl=tlClone(tlOf(proj)),points=[0,end],EPS=0.0005;
+    // 기본 컷 배치는 영상이 실제로 충분히 길면 편집 화면의 짧게 자른 길이보다 더 재생할 수 있다.
+    if(!saved){
+      var row=tl.tracks[0]||[];
+      row.forEach(function(b,i){
+        var until=row[i+1]?row[i+1].at:end;
+        if(b.kind==="clip" || i===row.length-1)b.len=Math.max(0,until-b.at);
+      });
+    }
+    var durationOf=function(src){
+      if(!src||src.kind!=="video")return 0;
+      var actual=durations&&Object.prototype.hasOwnProperty.call(durations,src.path)
+        ? Number(durations[src.path]) : NaN;
+      return Number.isFinite(actual)&&actual>0 ? actual : Number(src.dur)||0;
+    };
+    var add=function(t){if(Number.isFinite(t)&&t>0&&t<end)points.push(t);};
+    tl.tracks.forEach(function(list){
+      (list||[]).forEach(function(b){
+        add(b.at);add(b.at+b.len);
+        var src=tlSource(proj,b);
+        if(src&&src.kind==="video")add(b.at+durationOf(src)-(Number(b.in)||0));
+      });
+    });
+    points.sort(function(a,b){return a-b;});
+    var bounds=points.filter(function(t,i){return i===0||t-points[i-1]>1e-7;});
+    var segs=tlSegments(proj),gaps=[];
+    bounds.forEach(function(a,i){
+      if(i>=bounds.length-1)return;
+      var b=bounds[i+1];
+      if(b-a<=EPS)return;
+      var plan=tlFramePlan(proj,tl,VIDEO.coverHold+(a+b)/2,segs);
+      var bad=plan.kind==="magenta";
+      if(plan.kind==="video"){
+        var d=durationOf({kind:"video",path:plan.path,dur:plan.dur});
+        bad=!(d>0&&plan.elapsed>=-1e-7&&plan.elapsed<d-1e-7);
+      }
+      if(!bad)return;
+      var last=gaps[gaps.length-1];
+      if(last&&a-last.end<=EPS)last.end=b;
+      else gaps.push({start:a,end:b});
+    });
+    return gaps;
+  }
+  function videoGapMessage(gaps){
+    if(!gaps.length)return "";
+    var range=gaps.slice(0,4).map(function(g){
+      return thumbClock(VIDEO.coverHold+g.start)+"–"+thumbClock(VIDEO.coverHold+g.end);
+    }).join(" · ");
+    return "영상 제작 불가: 분홍색 빈 화면 "+gaps.length+"구간 ("+range+
+      (gaps.length>4?" · 외 "+(gaps.length-4)+"구간":"")+
+      "). ⑩ 편집모드에서 사진·영상 블록을 빈 구간에 넣거나 영상 길이를 조정해주세요. 시간은 커버를 포함한 ⑪ 영상 기준이에요.";
+  }
+  function videoRenderGuard(proj,voiceEnd,durations){
+    if(!proj||!timelineReady()||!(proj.photos||[]).length)return {ok:true,gaps:[],message:""};
+    var gaps=videoOutputGaps(proj,voiceEnd,durations);
+    return {ok:!gaps.length,gaps:gaps,message:videoGapMessage(gaps)};
+  }
+
   // 라이브러리에서 '사용 중' 표시용.
   function tlUsage(tl){
     var u={};
@@ -3916,7 +4001,7 @@
       else if(!v.seeking && Math.abs(v.currentTime-plan.elapsed)>(live.drift||0.45)){
         try{ v.currentTime=Math.min(plan.elapsed, Math.max(0, v.duration-0.04)); }catch(x){}
       }
-      drawClipCut(g, v, text, plan.elapsed, v.duration);
+      drawClipCut(g, v, text, plan.elapsed, v.duration,arguments[5]===true);
       return;
     }
     if(live.video){ live.video.pause(); live.video=null; live.key=""; }
@@ -3925,6 +4010,7 @@
       drawCutText(g, text);
       return;
     }
+    if(arguments[5]===true)throw new Error("⑩ 타임라인에 빈 화면이나 불러오지 못한 미디어가 있어요. 영상 블록을 확인해주세요.");
     drawMagentaCut(g, text);
   }
 
@@ -7181,7 +7267,7 @@
     var mv=document.getElementById("mkvideo");
     if(mv) mv.addEventListener("click",async function(){
       mv.disabled=true; try{ await makeVideo(); } finally{
-        var b=document.getElementById("mkvideo"); if(b) b.disabled=false; }
+        var b=document.getElementById("mkvideo"); if(b) b.disabled=!videoRenderGuard(current).ok; }
     });
 
     var refill=document.getElementById("refill");
