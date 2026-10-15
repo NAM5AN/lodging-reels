@@ -398,7 +398,7 @@ test("clips are cleaned up with their photo and project, kept across reloads, an
   assert.match(drop,/storeDelete\(cl\.id\)/);
   assert.match(html,/v\.clips=Object\.assign\(\{\}, v\.clips\|\|\{\}\);/);
   assert.match(html,/v\.clipJobs=JSON\.parse\(JSON\.stringify\(v\.clipJobs\|\|\{\}\)\);/);
-  assert.match(html,/if\(clipJobIds\(current\)\.length\) ensureClipPoll\(\);/);
+  assert.match(html,/if\(clipJobIds\(current\)\.length \|\| elemPendingWork\(\)\.length\) ensureClipPoll\(\);/);
 });
 
 
