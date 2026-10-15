@@ -22,7 +22,7 @@ function env(options={}){
   if(options.kling)el.kling=plain(options.kling);
   const requests=[],saved=[],warnings=[],logs=[],asked=[];
   const queue=(options.replies||[]).slice();
-  let revision=0;
+  let revision=0,sharedSaveAttempts=0;
   let viewInputs=[];
   const ctx=vm.createContext({
     uid:UID,current:options.home?null:proj,projects:[proj],
@@ -45,7 +45,7 @@ function env(options={}){
       return !fail;
     },
     persistSharedElement:async (next,expected)=>{
-      const fail=options.failSharedSave&&options.failSharedSave(next,expected,saved.length);
+      const fail=options.failSharedSave&&options.failSharedSave(next,expected,sharedSaveAttempts++);
       if(fail)throw Error("mock shared revision/save failure");
       const stored=Object.assign({},next,{scope:"global",revision:"r"+(++revision)});
       ctx.sharedElements=ctx.sharedElements.filter(x=>x.key!==next.key);
