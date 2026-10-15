@@ -5845,8 +5845,11 @@
     }catch(e){
       console.error("공통 요소 등록 상태 저장/조회 실패",e);
       if(e&&e.code==="shared_conflict"&&uid===owner){await loadSharedElements();sharedRefreshLive(key);}
-      else if(elapsed||manual||elemMisses[key]>=ELEM.maxMisses)
-        await sharedPauseRegistration(key,k,"Kling 등록 확인 중 오류가 났어요. ID "+k.taskId+"를 보존하고 다시 확인해주세요.");
+      else{
+        elemMisses[key]=(elemMisses[key]||0)+1;
+        if(elapsed||manual||elemMisses[key]>=ELEM.maxMisses)
+          await sharedPauseRegistration(key,k,"Kling 등록 확인 중 오류가 났어요. ID "+k.taskId+"를 보존하고 다시 확인해주세요.");
+      }
     }finally{delete elemInflight[key];}
   }
 
