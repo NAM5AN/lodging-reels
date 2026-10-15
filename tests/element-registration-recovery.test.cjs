@@ -233,6 +233,40 @@ test("UI exposes manual status, optional task ID attach and archive restoration"
   const details=h.ctx.elemStatusDetails(h.proj,{...h.el,kling:{...oldJob(),needsCheck:true}});
   assert.equal(details.formal.label,"확인 필요");
 });
+test("shared repeated network exceptions are paused after 15 attempts with the original task ID intact",async()=>{
+  const h=env({global:true,kling:oldJob(1000),
+    replies:Array.from({length:15},()=>Error("temporary connection problem"))});
+  for(let i=0;i<15;i++)await h.ctx.sharedCheck(h.el.key);
+  assert.equal(h.requests.length,15);
+  assert.ok(h.requests.every(r=>r.action==="element_status"));
+  const k=h.ctx.sharedElements[0].kling;
+  assert.equal(k.needsCheck,true);
+  assert.equal(k.taskId,"OLD_JOB_1");
+});
+test("local completed ID save error never becomes ready until rechecked and saved",async()=>{
+  const h=env({kling:oldJob(1000),replies:[ready,ready],
+    failLocalSave:(_snapshot,index)=>index===0});
+  await h.ctx.elemCheck(h.proj,h.el.key);
+  assert.equal(h.el.kling.status,"pending");
+  assert.equal(h.el.kling.needsCheck,true);
+  assert.equal(h.el.kling.taskId,"OLD_JOB_1");
+  await h.ctx.elemManualCheck(h.el.key);
+  assert.equal(h.el.kling.status,"ready");
+  assert.equal(h.el.kling.elementId,"NEW_2");
+  assert.deepEqual(h.requests.map(r=>r.action),["element_status","element_status"]);
+});
+test("shared completed ID save error keeps old official identity until a successful recheck",async()=>{
+  const h=env({global:true,kling:{...oldJob(),elementId:"OLD_1"},
+    replies:[ready,ready],failSharedSave:(_next,_expected,index)=>index===0});
+  await h.ctx.sharedCheck(h.el.key);
+  assert.equal(h.ctx.sharedElements[0].kling.status,"pending");
+  assert.equal(h.ctx.sharedElements[0].kling.needsCheck,true);
+  assert.equal(h.ctx.sharedElements[0].kling.elementId,"OLD_1");
+  await h.ctx.elemManualCheck(h.el.key);
+  assert.equal(h.ctx.sharedElements[0].kling.status,"ready");
+  assert.equal(h.ctx.sharedElements[0].kling.elementId,"NEW_2");
+  assert.deepEqual(h.requests.map(r=>r.action),["element_status","element_status"]);
+});
 test("no Supabase functions, audio or timeline rendering changes in the recovery patch",()=>{
   assert.match(html,/function edOpen\(/);
   assert.match(html,/function clipPlan\(/);
