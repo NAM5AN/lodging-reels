@@ -4878,7 +4878,9 @@
         h+='<p class="status bad">'+esc(k.notice||"기존 Kling 등록 작업의 완료 여부를 확인해야 해요.")+'</p>';
         if(elemTaskId(k))h+='<button type="button" data-element-check="'+key+'">완료 여부 확인</button>'+
           '<button type="button" class="ghost" data-element-resume="'+key+'">자동 확인 재개</button>';
-        else h+='<p class="hint">작업 ID가 없어 자동 조회할 수 없어요. Kling 등록 내역을 먼저 확인해주세요.</p>';
+        else h+='<p class="hint">작업 ID가 없어 자동 조회할 수 없어요. Kling 등록 내역에서 기존 ID를 찾아 입력해주세요.</p>'+
+          '<input type="text" maxlength="128" placeholder="Kling 등록 작업 ID" data-element-task="'+key+'">'+
+          '<button type="button" data-element-attach="'+key+'">입력한 작업 ID로 완료 확인</button>';
         h+='<button type="button" class="ghost danger" data-element-abandon="'+key+'">추적 포기·재등록 허용</button>';
       }else h+='<button type="button" class="ghost" data-element-pause="'+key+'">자동 확인 중지</button>';
     }else if(elemRecoverableJob(el)){
@@ -5848,11 +5850,101 @@
     }finally{delete elemInflight[key];}
   }
 
+  // 공통 요소는 revision CAS, 개별 요소는 숙소 데이터 저장 성공 후에만 상태를 변경한다.
+  async function elemSaveRecovery(proj,el,nextK,nextHistory){
+    var key=el.key;
+    nextHistory=nextHistory||elemArchivedJobs(el).slice();
+    if(el.scope==="global"){
+      try{
+        await persistSharedElement(Object.assign({},el,{kling:nextK,klingHistory:nextHistory}),el);
+        delete elemErrors[key];sharedRefreshLive(key);return true;
+      }catch(e){
+        elemErrors[key]="작업 상태 저장 실패: "+((e&&e.message)||e);
+        sharedRefreshLive(key);return false;
+      }
+    }
+    var oldK=el.kling,oldHistory=el.klingHistory;
+    el.kling=nextK;el.klingHistory=nextHistory;
+    if(!await persist(proj)){
+      el.kling=oldK;el.klingHistory=oldHistory;
+      elemErrors[key]="요소 작업 상태를 저장하지 못했어요. 기존 작업은 그대로예요.";
+      if(current===proj)elemRefreshLive();return false;
+    }
+    delete elemErrors[key];if(current===proj)elemRefreshLive();return true;
+  }
+  function elemRecoveryTarget(key){
+    var el=elemByKey(current,key);
+    if(!el)return null;
+    return {el:el,proj:el.scope==="global"?null:current};
+  }
+  async function elemManualCheck(key){
+    var x=elemRecoveryTarget(key);
+    if(!x||!x.el.kling||x.el.kling.status!=="pending"||elemInflight[key])return;
+    if(x.el.scope==="global")await sharedCheck(key,{force:true});
+    else await elemCheck(x.proj,key,{force:true});
+  }
+  async function elemPauseByKey(key){
+    var x=elemRecoveryTarget(key);
+    if(!x||!elemAutoPending(x.el)||elemInflight[key])return;
+    var k=x.el.kling,message="자동 확인만 중지했어요. Kling 등록 작업은 취소되지 않으며 작업 ID를 보존했어요.";
+    if(x.el.scope==="global")await sharedPauseRegistration(key,k,message);
+    else await elemPauseRegistration(x.proj,key,k,message);
+  }
+  async function elemResumeByKey(key){
+    var x=elemRecoveryTarget(key),k=x&&x.el.kling;
+    if(!k||k.status!=="pending"||!k.needsCheck||!elemTaskId(k)||elemInflight[key])return;
+    var next=Object.assign({},k,{needsCheck:false,notice:"",pollSince:Date.now()});
+    if(await elemSaveRecovery(x.proj,x.el,next)) {
+      delete elemMisses[key];ensureClipPoll();
+    }
+  }
+  // 추적 포기는 Kling 취소가 아니다. 미확인 등록은 두 번 확인한 뒤에도 보관 기록에 남긴다.
+  async function elemAbandonByKey(key){
+    var x=elemRecoveryTarget(key),k=x&&x.el.kling;
+    if(!k||k.status!=="pending"||!k.needsCheck||elemInflight[key])return;
+    if(!confirm("「"+x.el.name+"」 Kling 등록은 실제로 끝났을 수 있어요.\n추적을 포기해도 Kling 서버의 작업·요금은 취소되지 않아요. 작업 기록을 보관할까요?"))return;
+    if(!confirm("최종 확인: 새로 정식 등록하면 중복 요금이 발생할 수 있어요. 기존 완료 여부를 확인한 뒤 진행하는 것이 안전해요.\n정말 추적을 포기할까요?"))return;
+    var history=elemArchivedJobs(x.el).slice();
+    history.push(Object.assign({},k,{archivedAt:Date.now()}));
+    var next=Object.assign({},k,{status:"failed",needsCheck:false,msg:"이전 등록 작업을 보관했어요. 재등록 전에 먼저 복구·확인해주세요."});
+    if(await elemSaveRecovery(x.proj,x.el,next,history))
+      toast("Kling 등록 작업 ID를 보관했어요. 복구·확인할 수 있어요.");
+  }
+  async function elemRestoreByKey(key){
+    var x=elemRecoveryTarget(key);
+    if(!x||elemInflight[key]||x.el.kling&&x.el.kling.status==="pending")return;
+    if(x.el.kling&&x.el.kling.status==="ready"&&x.el.kling.sig===elemSig(x.el))return;
+    var history=elemArchivedJobs(x.el).slice();
+    var at=-1;
+    for(var i=history.length-1;i>=0;i--)if(elemTaskId(history[i])){at=i;break;}
+    var previous=at>=0?history[at]:elemRecoverableJob(x.el);
+    if(!previous||!elemTaskId(previous))return;
+    if(!confirm("이전 Kling 등록 작업 ID "+elemTaskId(previous)+"의 완료 여부를 확인할까요? 이 확인은 새 유료 등록 요청이 아니에요."))return;
+    if(at>=0)history.splice(at,1);
+    var next=Object.assign({},previous,{status:"pending",needsCheck:true,
+      notice:"이전 등록 작업의 완료 여부를 확인할게요. 새 유료 등록 요청은 보내지 않아요."});
+    if(await elemSaveRecovery(x.proj,x.el,next,history))await elemManualCheck(key);
+  }
+  // Kling 계정에서 확인한 작업 번호를 연결하는 복구 전용 입력. 유료 element_create 호출 금지.
+  async function elemAttachByKey(key){
+    var x=elemRecoveryTarget(key),k=x&&x.el.kling;
+    if(!k||k.status!=="pending"||!k.needsCheck||elemTaskId(k)||elemInflight[key])return;
+    var inputs=Array.from(view.querySelectorAll("[data-element-task]"));
+    var input=inputs.find(function(a){return a.dataset.elementTask===key;});
+    var taskId=input&&String(input.value||"").trim();
+    if(!/^[A-Za-z0-9_-]{1,128}$/.test(taskId||"")){
+      toast("Kling 등록 작업 ID를 영문·숫자·-·_ 로 입력해주세요.");return;
+    }
+    if(!confirm("Kling 등록 작업 ID "+taskId+"의 완료 여부를 조회할까요?\n새 등록·결제 요청은 보내지 않아요."))return;
+    var next=Object.assign({},k,{taskId:taskId,needsCheck:true,notice:"입력한 기존 Kling 작업 ID를 확인할게요."});
+    if(await elemSaveRecovery(x.proj,x.el,next))await elemManualCheck(key);
+  }
+
   view.addEventListener("click",function(ev){
     var edit=elemTarget(ev,"data-element-photos"),reg=elemTarget(ev,"data-shared-register");
     var check=elemTarget(ev,"data-element-check"),pause=elemTarget(ev,"data-element-pause"),
         resume=elemTarget(ev,"data-element-resume"),abandon=elemTarget(ev,"data-element-abandon"),
-        restore=elemTarget(ev,"data-element-restore");
+        restore=elemTarget(ev,"data-element-restore"),attach=elemTarget(ev,"data-element-attach");
     if(edit)elemPhotoEditorOpen(edit.dataset.elementPhotos);
     else if(reg)sharedRegister(reg.dataset.sharedRegister);
     else if(check)elemManualCheck(check.dataset.elementCheck);
@@ -5860,6 +5952,7 @@
     else if(resume)elemResumeByKey(resume.dataset.elementResume);
     else if(abandon)elemAbandonByKey(abandon.dataset.elementAbandon);
     else if(restore)elemRestoreByKey(restore.dataset.elementRestore);
+    else if(attach)elemAttachByKey(attach.dataset.elementAttach);
   });
 
   // ---------- ⑨ 요소 관리 ----------
