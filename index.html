@@ -2041,6 +2041,7 @@
   }
 
   function videoSection(){
+    var renderGate=videoRenderGuard(current);
     var h='<h2>⑪ 영상 만들기</h2><div class="card">';
     h+='<p class="hint" style="margin-bottom:10px">자막은 ⑦에서 계산한 발화 시각에 표시돼요. ⑩에서 선택한 사진에 유효한 ⑨ Kling 영상이 있으면 MP4를 우선 사용하고, 없거나 가공 사진이 변경됐으면 사진을 사용해요. '+
        '같은 사진의 연속 컷은 영상을 이어 재생하며, 클립 길이가 부족한 부분은 반복 없이 마젠타(#FF00FF) 단색으로 표시하고 자막은 유지해요. Kling 오디오는 넣지 않아요.</p>';
@@ -2063,8 +2064,10 @@
       h+='<p class="hint">전체 영상 프레임을 고르려면 ⑦ 음성 싱크와 ⑧ 사진을 먼저 준비해 주세요.</p>';
     }
     h+='</div>'+
-       '<button type="button" class="primary" id="mkvideo" style="width:100%;margin-top:12px">영상 만들기</button>'+
-       '<p class="status" id="renderstat"></p></div>';
+       '<button type="button" class="primary" id="mkvideo" style="width:100%;margin-top:12px"'+
+         (renderGate.ok?'':' disabled title="분홍색 빈 화면을 먼저 메워주세요"')+'>영상 만들기</button>'+
+       '<p class="status'+(renderGate.ok?'':' bad')+'" id="renderstat" role="status" aria-live="polite">'+
+         esc(renderGate.message)+'</p></div>';
     return h;
   }
 
@@ -3891,6 +3894,71 @@
     if(end-at>0.005) out.push({start:at, end:end});
     return out.filter(function(g){ return g.end-g.start>0.005; });
   }
+  // ⑪ 안전 검사: 모든 블록의 경계와 영상 원본 끝을 사용해 빈 화면을 찾는다.
+  // 단순 프레임 샘플링은 아주 짧은 마젠타 구간을 놓치므로 하지 않는다.
+  function videoOutputGaps(proj, voiceEnd, durations){
+    if(!proj || !(proj.photos||[]).length || !(proj.cutTimeline||[]).length)return [];
+    var end=Number(voiceEnd);
+    if(!Number.isFinite(end) || end<=0)end=tlVoiceEnd(proj);
+    if(!(end>0))return [];
+    var saved=!!tlSaved(proj),tl=tlClone(tlOf(proj)),points=[0,end],EPS=0.0005;
+    // 기본 컷 배치는 영상이 실제로 충분히 길면 편집 화면의 짧게 자른 길이보다 더 재생할 수 있다.
+    if(!saved){
+      var row=tl.tracks[0]||[];
+      row.forEach(function(b,i){
+        var until=row[i+1]?row[i+1].at:end;
+        if(b.kind==="clip" || i===row.length-1)b.len=Math.max(0,until-b.at);
+      });
+    }
+    var durationOf=function(src){
+      if(!src||src.kind!=="video")return 0;
+      var actual=durations&&Object.prototype.hasOwnProperty.call(durations,src.path)
+        ? Number(durations[src.path]) : NaN;
+      return Number.isFinite(actual)&&actual>0 ? actual : Number(src.dur)||0;
+    };
+    var add=function(t){if(Number.isFinite(t)&&t>0&&t<end)points.push(t);};
+    tl.tracks.forEach(function(list){
+      (list||[]).forEach(function(b){
+        add(b.at);add(b.at+b.len);
+        var src=tlSource(proj,b);
+        if(src&&src.kind==="video")add(b.at+durationOf(src)-(Number(b.in)||0));
+      });
+    });
+    points.sort(function(a,b){return a-b;});
+    var bounds=points.filter(function(t,i){return i===0||t-points[i-1]>1e-7;});
+    var segs=tlSegments(proj),gaps=[];
+    bounds.forEach(function(a,i){
+      if(i>=bounds.length-1)return;
+      var b=bounds[i+1];
+      if(b-a<=EPS)return;
+      var plan=tlFramePlan(proj,tl,VIDEO.coverHold+(a+b)/2,segs);
+      var bad=plan.kind==="magenta";
+      if(plan.kind==="video"){
+        var d=durationOf({kind:"video",path:plan.path,dur:plan.dur});
+        bad=!(d>0&&plan.elapsed>=-1e-7&&plan.elapsed<d-1e-7);
+      }
+      if(!bad)return;
+      var last=gaps[gaps.length-1];
+      if(last&&a-last.end<=EPS)last.end=b;
+      else gaps.push({start:a,end:b});
+    });
+    return gaps;
+  }
+  function videoGapMessage(gaps){
+    if(!gaps.length)return "";
+    var range=gaps.slice(0,4).map(function(g){
+      return thumbClock(VIDEO.coverHold+g.start)+"–"+thumbClock(VIDEO.coverHold+g.end);
+    }).join(" · ");
+    return "영상 제작 불가: 분홍색 빈 화면 "+gaps.length+"구간 ("+range+
+      (gaps.length>4?" · 외 "+(gaps.length-4)+"구간":"")+
+      "). ⑩ 편집모드에서 사진·영상 블록을 빈 구간에 넣거나 영상 길이를 조정해주세요. 시간은 커버를 포함한 ⑪ 영상 기준이에요.";
+  }
+  function videoRenderGuard(proj,voiceEnd,durations){
+    if(!proj||!timelineReady()||!(proj.photos||[]).length)return {ok:true,gaps:[],message:""};
+    var gaps=videoOutputGaps(proj,voiceEnd,durations);
+    return {ok:!gaps.length,gaps:gaps,message:videoGapMessage(gaps)};
+  }
+
   // 라이브러리에서 '사용 중' 표시용.
   function tlUsage(tl){
     var u={};
