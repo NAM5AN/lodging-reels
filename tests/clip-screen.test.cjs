@@ -46,7 +46,8 @@ const PURE=[
   "clipRequest(proj, pid){","clipState(proj, pid){","clipElapsed(job){","clipHintText(proj, pid){",
 ];
 function sandbox(extra){
-  const sb=Object.assign({esc:(v)=>String(v??""),clipInflight:{},clipErrors:{},clipMisses:{},FN:{clip:FN_URL}},extra||{});
+  const sb=Object.assign({esc:(v)=>String(v??""),clipInflight:{},clipErrors:{},clipMisses:{},
+    FN:{clip:FN_URL},confirm:()=>false,uid:UID},extra||{});
   vm.runInNewContext([
     grabVar(/  var CLIP = \{[\s\S]*?\};\n/,"CLIP"),
     grabVar(/  var ELEM = \{[^\n]*\n/,"ELEM"),
@@ -248,9 +249,13 @@ function runner(replies){
     },
     persist:async(p)=>{ persisted.push(plain(p)); return true; },
     storeDelete:async(id)=>{ deleted.push(id); },
-    renderClipsSoon:()=>{}, ensureClipPoll:()=>{}, toast:(m)=>toasts.push(m), console:{error(){}},
+    renderClipsSoon:()=>{}, ensureClipPoll:()=>{}, toast:(m)=>toasts.push(m), console:{error(){},warn(){}},
   });
-  vm.runInNewContext(grab("clipStart(proj, pid){")+"\n"+grab("clipCheck(proj, pid){"),sb);
+  vm.runInNewContext([
+      "clipJobIds(proj){","clipTaskId(job){","clipAutoJobIds(proj){","clipOldJobs(proj,pid){",
+      "clipRecoverableOldJob(proj,pid){","clipRequireCheck(proj,pid,job,message){",
+      "clipStart(proj, pid){","clipCheck(proj,pid,options){",
+    ].map(grab).join("\n"),sb);
   return {sb,calls,deleted,persisted,toasts};
 }
 
@@ -271,8 +276,9 @@ test("start: one request even when tapped twice, typed length and elements are s
   const f=runner([{status:502,body:{error:"kling_auth",message:"Kling API 키가 거부됐어요."}}]);
   const proj2=project();
   await f.sb.clipStart(proj2,ORIGINAL);
-  assert.equal(proj2.clipJobs[ORIGINAL],undefined);
-  assert.match(f.sb.clipErrors[ORIGINAL],/1번 영상 요청 실패: Kling API 키가 거부됐어요\./);
+  assert.ok(proj2.clipJobs[ORIGINAL],"502 may hide an accepted Kling job, so keep a recovery record");
+  assert.equal(proj2.clipJobs[ORIGINAL].needsCheck,true);
+  assert.match(proj2.clipJobs[ORIGINAL].notice,/요청 결과를 확인하지 못했어요/);
 });
 
 test("start: invalid inputs are blocked but unregistered elements can use one photo reference",async()=>{
@@ -327,7 +333,7 @@ test("check: pending waits, completed swaps in the new video and deletes the old
   proj2.clipJobs={[ORIGINAL]:{op:{taskId:"t2"},at:Date.now()}};
   await e.sb.clipCheck(proj2,ORIGINAL);
   assert.equal(proj2.clipJobs[ORIGINAL],undefined);
-  assert.match(e.sb.clipErrors[ORIGINAL],/1번 영상 만들기 실패: content risk/);
+  assert.match(e.sb.clipErrors[ORIGINAL],/1번 영상 Kling 생성 실패\(확인됨\): content risk/);
 });
 
 test("check: transient errors keep waiting, a stopped job's result is thrown away, old jobs give up",async()=>{
@@ -339,12 +345,12 @@ test("check: transient errors keep waiting, a stopped job's result is thrown awa
   assert.ok(proj.clipJobs[ORIGINAL],"503 and network errors do not cancel the wait");
   assert.equal(t.sb.clipMisses[ORIGINAL],2);
 
-  // 응답을 기다리는 사이 '기다리기 그만' → 도착한 결과 파일은 지운다
+  // 결과 확인 중 사용자가 추적을 보관한 경우, 나중에 복구할 수 있으므로 완료 파일을 지우지 않는다
   let release;
   const gate=new Promise((r)=>{ release=r; });
   const s=runner([]);
   s.sb.api=async()=>{ await gate; return {ok:true,status:200,text:async()=>JSON.stringify({status:"completed",id:"late.mp4"})}; };
-  vm.runInNewContext(grab("clipCheck(proj, pid){"),s.sb);
+  vm.runInNewContext(grab("clipCheck(proj,pid,options){"),s.sb);
   const proj2=project();
   proj2.clipJobs={[ORIGINAL]:{op:{taskId:"t9"},at:Date.now()}};
   const pending=s.sb.clipCheck(proj2,ORIGINAL);
@@ -352,15 +358,16 @@ test("check: transient errors keep waiting, a stopped job's result is thrown awa
   release();
   await pending;
   assert.equal((proj2.clips||{})[ORIGINAL],undefined);
-  assert.deepEqual(s.deleted,["late.mp4"]);
+  assert.deepEqual(s.deleted,[],"late result is retained for potential archive recovery");
 
-  const g=runner([]);
+  const g=runner([{status:200,body:{status:"pending",kling:"processing"}}]);
   const proj3=project();
   proj3.clipJobs={[ORIGINAL]:{op:{taskId:"old"},at:Date.now()-41*60*1000}};
   await g.sb.clipCheck(proj3,ORIGINAL);
-  assert.equal(g.calls.length,0);
-  assert.equal(proj3.clipJobs[ORIGINAL],undefined);
-  assert.match(g.sb.clipErrors[ORIGINAL],/40분 넘게/);
+  assert.equal(g.calls.length,1,"after 40min the existing ID is checked, not deleted");
+  assert.equal(g.calls[0].body.operation.taskId,"old");
+  assert.equal(proj3.clipJobs[ORIGINAL].needsCheck,true);
+  assert.match(proj3.clipJobs[ORIGINAL].notice,/아직 진행 중/);
 });
 
 test("row layout: 원본 → 가공 → 영상, then 사진 가공 / 영상화 with its own length box",()=>{
