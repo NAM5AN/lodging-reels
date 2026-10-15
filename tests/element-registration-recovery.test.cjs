@@ -36,7 +36,7 @@ function env(options={}){
     esc:x=>String(x??"").replace(/&/g,"&amp;").replace(/</g,"&lt;"),
     toast:x=>warnings.push(x),renderClipsSoon:()=>{},renderEdit:()=>{},elemRefreshLive:()=>{},sharedRefreshLive:()=>{},
     setTimeout:()=>{ctx.scheduled=(ctx.scheduled||0)+1;return 1;},
-    setInterval:()=>1,clearTimeout:()=>{},clearInterval:()=>{},
+    setInterval:()=>1,clearTimeout:()=>{},clearInterval:()=>{},clipClockTick:()=>{},
     console:{warn:x=>logs.push(x),error:x=>logs.push(x)},
     confirm:x=>{asked.push(x);return options.confirm!==false;},
     persist:async p=>{
@@ -93,7 +93,7 @@ test("local save failure blocks paid registration completely",async()=>{
   const h=env({failLocalSave:()=>true});
   await h.ctx.elemRegister(h.el.key);
   assert.equal(h.requests.length,0);
-  assert.equal(h.el.kling,undefined);
+  assert.equal(h.el.kling,null);
 });
 test("local ambiguous network start is paused and a second paid request is blocked",async()=>{
   const h=env({replies:[Error("lost response")]});
@@ -126,7 +126,7 @@ test("31-minute shared work checks existing task before pausing and recovers old
 });
 test("reloading to home finds BOTH project-local and shared pending work",()=>{
   const h=env({home:true,global:true,kling:{...oldJob(1000),elementId:"OLD_1"}});
-  const local=makeEl();local.key="another";local.kling=oldJob(1000);
+  const local=makeEl();local.key="another";local.name="다른 인물";local.kling=oldJob(1000);
   h.proj.elements=[local];
   assert.equal(h.ctx.elemPendingWork().length,2);
   h.ctx.ensureClipPoll();
