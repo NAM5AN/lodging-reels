@@ -254,5 +254,6 @@ test("cover image and video intro use same composed canvas while later cuts keep
   assert.match(reel,/coverCanvas=await makeSelectedCoverCanvas\(current\)/);
   assert.match(reel,/g\.drawImage\(coverCanvas,0,0,VIDEO\.w,VIDEO\.h\)/);
   assert.match(reel,/drawCut\(g,imgs\[pi\],cuts\[idx\]\|\|"",k\)/);
-  assert.match(reel,/drawClipCut\(g,clip\.video,cuts\[idx\]\|\|"",elapsed,clip\.duration\)/);
+  assert.match(reel,/drawClipCut\(g,clip\.video,cuts\[idx\]\|\|"",elapsed,clip\.duration,true\)/,
+    "⑪ renderer aborts instead of drawing a temporary magenta video frame");
 });
