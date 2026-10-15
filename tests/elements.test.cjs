@@ -279,7 +279,7 @@ test("register: one Kling request per tap, saved as pending, then ready (old Kli
   assert.deepEqual(r.calls.map((c)=>c.body.action),["element_create","element_status","element_status"],"old Kling ID is preserved instead of deleting it");
   assert.deepEqual(r.calls[1].body,{action:"element_status",projectId:P,operation:{taskId:"et2"}});
   assert.ok(kid.retiredElementIds.includes("9001"),"previous official identity remains recoverable");
-  assert.match(r.toasts.at(-1),/「아이」 Kling 등록이 끝났어요/);
+  assert.match(r.toasts.at(-1),/「아이」 Kling 등록 완료/);
 
   const f=sandbox(project(),[{status:200,body:{status:"error",message:"face not clear"}}]);
   const d=f.sb.current.elements[1];
