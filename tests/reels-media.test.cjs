@@ -83,7 +83,9 @@ test("HTML inline script parses and current 9-rule prompt and model routing stay
   assert.ok(html.includes("var w=sideWarnings(lines).concat(sceneWarnings(lines)).concat(scriptWarnings(lines));"));
   // OCR does not set a purpose; script creation/repair/extension all use Opus 5.5.
   assert.ok(html.includes('applyFields(await askJSON(fillPrompt('));
-  assert.ok(html.includes('}, "script");'));
+  // The first call decides the trip brief, cover and lines together; review is its own Opus stage.
+  assert.ok(html.includes('}, "script_brief");'));
+  assert.ok(html.includes('null, "script_review"'));
   assert.ok(html.includes('null, "script_repair"'));
   assert.ok(html.includes('null, "script_extend"'));
   assert.ok(html.includes('if(purpose==="script_repair")request.repair_indices=repairIndices||[];'));

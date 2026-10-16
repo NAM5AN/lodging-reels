@@ -87,9 +87,9 @@ test("scriptWarnings reports any bracket line, including hand-edited scripts",()
 });
 
 test("makeScript sends bracket lines to repair with a no-bracket rule",async()=>{
-  const env=sandbox([FIRST,{fixed:{"2":"둘이 1박에 19만원대","3":"1박에 이 가격"}}]);
+  const env=sandbox([FIRST,{fixed:{"2":"둘이 1박에 19만원대","3":"1박에 이 가격"}},{issues:[]}]);
   await env.ctx.makeScript();
-  assert.equal(env.calls.length,2);
+  assert.deepEqual(env.calls.map(c=>c.purpose),["script_brief","script_repair","script_review"]);
   assert.equal(env.calls[1].purpose,"script_repair");
   assert.deepEqual(env.calls[1].repair_indices,[2,3]);
   assert.match(env.calls[1].prompt,/괄호 \( \) 는 쓰지 마세요/);
@@ -97,18 +97,21 @@ test("makeScript sends bracket lines to repair with a no-bracket rule",async()=>
 });
 
 test("makeScript strips brackets the model refuses to drop, keeping the cut count",async()=>{
-  const env=sandbox([FIRST,{fixed:{"2":"19만원대 (2인)","3":"(1박)"}}]);
+  const env=sandbox([FIRST,{fixed:{"2":"19만원대 (2인)","3":"(1박)"}},{issues:[]}]);
   await env.ctx.makeScript();
   const lines=env.ctx.current.script.split("\n");
   assert.equal(lines.length,4);
   assert.deepEqual(lines,["가격부터 봤는데","19만원대","1박","댓글 남겨주세요"]);
   assert.ok(!PAREN.test(env.ctx.current.script));
   assert.ok(!/괄호/.test(env.stat.textContent),"left-over summary must not mention brackets");
+  // 내용 검토는 실제로 나갈(괄호를 걷어낸) 대본을 본다
+  const rv=env.calls.find(c=>c.purpose==="script_review");
+  assert.ok(rv && !/\(2인\)|\(1박\)/.test(rv.prompt.split("# 자막")[1]));
 });
 
 test("extend prompt also forbids brackets",async()=>{
   const env=sandbox([{cover:["주말에 가봤어요","진짜예요"],script:["가격부터 봤는데","둘이 1박에 19만원대"]},
-    {more:["댓글에 특가","바로 보내드려요"]}]);
+    {more:["댓글에 특가","바로 보내드려요"]},{issues:[]}]);
   await env.ctx.makeScript();
   assert.equal(env.calls[1].purpose,"script_extend");
   assert.match(env.calls[1].prompt,/괄호 \( \) 는 쓰지 마세요/);

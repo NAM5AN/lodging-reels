@@ -37,6 +37,10 @@ jobs:
         run: |
           deno check supabase/functions/lodging-reels-clip/clip.ts
           deno test --no-check tests/clip-function.test.ts
+      - name: Check and test script Edge Function schema (lodging-reels-ai)
+        run: |
+          deno check supabase/functions/lodging-reels-ai/schema.ts
+          deno test --no-check tests/ai-function.test.ts
       - name: Check SoundTouch audio processing CDN assets
         run: |
           curl --fail --location --silent --show-error --head --retry 2 'https://esm.sh/@soundtouchjs/audio-worklet@2.1.1'
